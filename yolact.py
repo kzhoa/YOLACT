@@ -126,7 +126,7 @@ class Prediction(nn.Module):
 
     def __init__(self,
                  in_dim,
-                 out_dim=256,
+                 inner_dim=256,
                  mask_dim=32,
                  num_classes=81,
                  aspect_ratios=[[1, 1 / 2, 2]],
@@ -138,7 +138,7 @@ class Prediction(nn.Module):
         self.num_priors = sum(len(x) * len(scales) for x in aspect_ratios)  # 3个ratio*1个sclae=3
         self.parent = None
         self.index = index
-        self.num_heads = num_heads
+        self.num_heads = num_heads  # 不开启split的话没用的参数
         self.aspect_ratios = aspect_ratios
         self.scales = scales
 
@@ -151,21 +151,21 @@ class Prediction(nn.Module):
         # 原作者默认设为True
         self.extra_head_net = True
         if self.extra_head_net:
-            self.upfeature = nn.Conv2d(in_dim, out_dim, kernel_size=3, padding=1)
+            self.upfeature = nn.Conv2d(in_dim, inner_dim, kernel_size=3, padding=1)
 
         # 原作者默认设为False
         self.use_prediction_module = True
         if self.use_prediction_module:
-            self.block = Bottleneck(out_dim, out_dim // 4)  # 除4因为自带expansion=4
-            self.conv = nn.Conv2d(out_dim, out_dim, kernel_size=1)
-            self.bn = nn.BatchNorm2d(out_dim)
+            self.block = Bottleneck(inner_dim, inner_dim // 4)  # 除4因为自带expansion=4
+            self.conv = nn.Conv2d(inner_dim, inner_dim, kernel_size=1)
+            self.bn = nn.BatchNorm2d(inner_dim)
 
         # 原作者默认设为True
         self.eval_mask_branch = True
 
-        self.bbox_layer = nn.Conv2d(out_dim, self.num_priors * 4, kernel_size=3, padding=1)
-        self.conf_layer = nn.Conv2d(out_dim, self.num_priors * self.num_classes, kernel_size=3, padding=1)
-        self.mask_layer = nn.Conv2d(out_dim, self.num_priors * self.mask_dim, kernel_size=3, padding=1)
+        self.bbox_layer = nn.Conv2d(inner_dim, self.num_priors * 4, kernel_size=3, padding=1)
+        self.conf_layer = nn.Conv2d(inner_dim, self.num_priors * self.num_classes, kernel_size=3, padding=1)
+        self.mask_layer = nn.Conv2d(inner_dim, self.num_priors * self.mask_dim, kernel_size=3, padding=1)
 
         # use_mask_scoring:false
         # use_instance_coeff:false
@@ -287,10 +287,6 @@ class Prediction(nn.Module):
         return self.priors
 
 
-class Detection(nn.Module):
-    def __init__(self):
-        pass
-
 
 class Yolact(nn.Module):
     """
@@ -298,12 +294,15 @@ class Yolact(nn.Module):
     """
 
     def __init__(self,
-
+                 num_classes=81,
                  selected_layers=[1, 2, 3],
                  fpn_dim=256,
                  num_downsample=2,
+                 pred_aspect_ratios=[],
+                 pred_scales=[],
                  ):
 
+        self.num_classes = num_classes
         self.mask_dim = 32
         self.num_grids = 0  # 不使用grid
         self.selected_layers = selected_layers
@@ -318,10 +317,10 @@ class Yolact(nn.Module):
         src_channels = self.backbone.channels  # [64*4,128*4,256*4,512*4]
         # 取[1,2,3],得到[128*4,256*4,512*4]
         self.fpn = FPN([src_channels[i] for i in self.selected_layers],
-                       out_dim= fpn_dim, num_downsample=num_downsample)
+                       out_dim=fpn_dim, num_downsample=num_downsample)
 
-        #经过fpn后，[0,1,2,3,4] 现在有5个层
-        self.selected_layers = list(range(len(selected_layers)+num_downsample))
+        # 经过fpn后，[0,1,2,3,4] 现在有5个层
+        self.num_pred_layers = len(selected_layers) + num_downsample
 
         # 3.protonet
         self.proto_net = ProtoNet(in_dim=fpn_dim, inner_dim=256, out_dim=32)
@@ -331,15 +330,33 @@ class Yolact(nn.Module):
         # 他那种写法不太符合我的习惯，这里改写一下。
         self.share_prediction_module = True
         if self.share_prediction_module:
-            #开启共享时，本质上只有一层。
-            self.prediction_layers = Prediction(in_dim=fpn_dim,out_dim=256,mask_dim=32,num_classes=81)
+            # 开启共享时，本质上只有一层。
+            self.prediction_layers = Prediction(in_dim=fpn_dim, inner_dim=256, mask_dim=32,
+                                                num_classes=self.num_classes,
+                                                aspect_ratios=pred_aspect_ratios,
+                                                scales=pred_scales)
         else:
-            #关闭共享时，就是一个list对list了
+            # 关闭共享时，就是一个list对list了
             self.prediction_layers = nn.ModuleList()
+            for i in range(self.num_pred_layers):
+                pred = Prediction(in_dim=fpn_dim,
+                                  inner_dim=256,
+                                  mask_dim=32,
+                                  num_classes=self.num_classes,
+                                  aspect_ratios=pred_aspect_ratios[i],
+                                  scales=pred_scales[i],
+                                  index=i
+                                  )
+                self.prediction_layers.append(pred)
 
+        # Default True in 1.0
+        self.use_semantic_segmentation_loss = True
+        if self.use_semantic_segmentation_loss:
+            self.semantic_seg_conv = nn.Conv2d(fpn_dim, self.num_classes - 1, kernel_size=1)
 
-        # 5.detection
-        self.detection
+        # 5.detection,for use in evaluation
+        self.detection = Detection(self.num_classes,
+                                   )
 
     def forward(self, x):
         pass

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="d8c62af5-8d35-4a8e-9bb9-025c492e50da" name="192.168.0.2" url="http://192.168.0.2">
+        <fileTransfer rootFolder="/home/qq" accessType="SFTP" host="192.168.0.2" port="22" sshConfigId="cb432b1a-a54a-4e71-9b93-6ee116995327" sshConfig="qq@192.168.0.2:22 password">
+          <advancedOptions>
+            <advancedOptions controlEncoding="UTF-8" dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

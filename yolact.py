@@ -322,16 +322,21 @@ class Yolact(nn.Module):
 
         #经过fpn后，[0,1,2,3,4] 现在有5个层
         self.selected_layers = list(range(len(selected_layers)+num_downsample))
-        src_channels = [fpn_dim]*len(self.selected_layers) #[256]*5
 
         # 3.protonet
         self.proto_net = ProtoNet(in_dim=fpn_dim, inner_dim=256, out_dim=32)
 
         # 4.prediction_module
-        # 原作者在yolact1.0中采用共享，yolact++中关闭共享。所以需要同时支持开关
+        # 原作者在yolact1.0中采用共享，yolact++中关闭共享。所以需要同时支持开关。
         # 他那种写法不太符合我的习惯，这里改写一下。
         self.share_prediction_module = True
-        self.prediction_module
+        if self.share_prediction_module:
+            #开启共享时，本质上只有一层。
+            self.prediction_layers = Prediction(in_dim=fpn_dim,out_dim=256,mask_dim=32,num_classes=81)
+        else:
+            #关闭共享时，就是一个list对list了
+            self.prediction_layers = nn.ModuleList()
+
 
         # 5.detection
         self.detection

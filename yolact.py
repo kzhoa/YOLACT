@@ -5,6 +5,10 @@ from torchvision.models.resnet import Bottleneck
 from backbone import ResNetBackboneGN
 import itertools
 
+
+import utils.models.detection as detection
+detection.Detec
+
 """
 原作者在整个工程里采用了torch.jit,
 为了精简工作，专注内核，已删去相关内容。
@@ -66,7 +70,7 @@ class FPN(nn.Module):
         # 此时outs的顺序为p5,p4,p3，需要反向为p3p4p5
         outs.reverse()
 
-        # 再增加downsample部分(根据原作者参数，不使用relu)
+        # 再增加downsample部分(根据原作者1.0参数，不使用relu)
         if self.num_downsample > 0:
             for dsamp in self.downsample_layers:
                 outs.append(dsamp(outs[-1]))
@@ -121,7 +125,7 @@ class Prediction(nn.Module):
     Note that this is slightly different to the module in the paper
     because the Bottleneck block actually has a 3x3 convolution in
     the middle instead of a 1x1 convolution.
-    摘要部分搬运，后面自己写
+    摘要部分搬运，后面改动
     """
 
     def __init__(self,
@@ -355,11 +359,31 @@ class Yolact(nn.Module):
             self.semantic_seg_conv = nn.Conv2d(fpn_dim, self.num_classes - 1, kernel_size=1)
 
         # 5.detection,for use in evaluation
-        self.detection = Detection(self.num_classes,
-                                   )
+        self.detection = Detect(self.num_classes,
+                                   bkg_label=0,
+                                   top_k=200,
+                                   conf_thresh=0.05, #nms_conf_thresh
+                                   nms_thresh=0.5)
+
+
+from utils.models.detection import Detect
 
     def forward(self, x):
-        pass
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     # 其他功能函数
     def train(self, mode=True):

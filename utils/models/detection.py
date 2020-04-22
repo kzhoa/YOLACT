@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+import numpy as np
 import torch
 import torch.nn.functional as F
 from ..box_utils import decode, jaccard, index2d
@@ -15,6 +17,7 @@ class Detect(object):
                  conf_thresh:int,
                  nms_thresh:int=0.5
                  ):
+
         self.num_classes = num_classes
         self.background_label = bkg_label
         self.top_k = top_k
@@ -27,7 +30,7 @@ class Detect(object):
         self.use_fast_nms = False
 
     def __call__(self,predictions,net):
-                """
+        """
         Args:
              loc_data: (tensor) Loc preds from loc layers
                 Shape: [batch, num_priors, 4]

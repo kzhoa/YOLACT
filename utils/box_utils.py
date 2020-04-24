@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 import torch
-#from utils import timer
 
-#from data import cfg
+
+# from utils import timer
+
+# from data import cfg
 
 
 def point_form(boxes):
@@ -157,6 +159,7 @@ def change(gt, priors):
 
 
 def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, conf_t, idx_t, idx, loc_data):
+    """注意这个函数跟SSD里那个match思路不一样。作者已经魔改过了。"""
     """Match each prior box with the ground truth box of the highest jaccard
     overlap, encode the bounding boxes, then return the matched indices
     corresponding to both confidence and location preds.
@@ -178,18 +181,20 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
 
     # 默认 False，直接简化
     # point_form效果是变成(x1,y1,x2,y2)
-    decoded_priors =point_form(priors)# (num_priors,4)
+    decoded_priors = point_form(priors)  # (num_priors,4)
     # cfg设置默认False,会调用jaccard，直接简化
-    overlaps = jaccard(truths, decoded_priors)# Size [num_objects, num_priors]
+    overlaps = jaccard(truths, decoded_priors)  # Size [num_objects, num_priors]
 
-    #对每个prior，找到一个IOU最高的gt_box
+    # 对每个prior，找到一个IOU最高的gt_box
     # Size [num_priors] best ground truth for each prior
     best_truth_overlap, best_truth_idx = overlaps.max(0)
 
+    # 好一个别浪费任何一个gt...节俭环保。
     # We want to ensure that each gt gets used at least once so that we don't
     # waste any training data. In order to do that, find the max overlap anchor
     # with each gt, and force that anchor to use that gt.
     for _ in range(overlaps.size(0)):
+        # 先找一个全局得分最高的gt_box，多个最大值取先遇到的。
         # Find j, the gt with the highest overlap with a prior
         # In effect, this will loop through overlaps.size(0) in a "smart" order,
         # always choosing the highest overlap first.
@@ -200,14 +205,19 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
         i = best_prior_idx[j]
 
         # Set all other overlaps with i to be -1 so that no other gt uses it
-        overlaps[:, i] = -1
+        overlaps[:, i] = -1  # 这列都变-1，下次就不会选中这个prior
         # Set all other overlaps with j to be -1 so that this loop never uses j again
-        overlaps[j, :] = -1
+        overlaps[j, :] = -1  # 这行都变-1，下次循环就不会选中该行，也就不会选中该gt_box，实现每次选不同gt的效果。
 
         # Overwrite i's score to be 2 so it doesn't get thresholded ever
         best_truth_overlap[i] = 2
         # Set the gt to be used for i to be j, overwriting whatever was there
         best_truth_idx[i] = j
+
+    # 上面这个循环有个问题。如果num_objects<num_priors，
+    # 循环到次数大于如果num_objects后，整个overlaps就全部-1了
+    # 这之后的操作全部都是取[0,0]点，没有意义
+    # 这个循环仅当num_objects==num_priors时才有价值。
 
     matches = truths[best_truth_idx]  # Shape: [num_priors,4]
     conf = labels[best_truth_idx] + 1  # Shape: [num_priors]
@@ -268,7 +278,6 @@ def encode(matched, priors, use_yolo_regressors: bool = False):
     return loc
 
 
-
 def decode(loc, priors, use_yolo_regressors: bool = False):
     """
     Decode predicted bbox coordinates using the same scheme
@@ -327,7 +336,6 @@ def log_sum_exp(x):
     return torch.log(torch.sum(torch.exp(x - x_max), 1)) + x_max
 
 
-
 def sanitize_coordinates(_x1, _x2, img_size: int, padding: int = 0, cast: bool = True):
     """
     Sanitizes the input coordinates so that x1 < x2, x1 != x2, x1 >= 0, and x2 <= image_size.
@@ -347,7 +355,6 @@ def sanitize_coordinates(_x1, _x2, img_size: int, padding: int = 0, cast: bool =
     x2 = torch.clamp(x2 + padding, max=img_size)
 
     return x1, x2
-
 
 
 def crop(masks, boxes, padding: int = 1):

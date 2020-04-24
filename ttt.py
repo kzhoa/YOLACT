@@ -1,7 +1,3 @@
-from utils.models import testclass
-
-
-a = testclass()
-a.hhh()
+from utils.models.detection import Detect
 
 

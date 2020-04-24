@@ -3,11 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.resnet import Bottleneck
 from backbone import ResNetBackboneGN
+
 import itertools
+from typing import List
 
-
-import utils.models.detection as detection
-detection.Detec
+from utils.models.detection import Detect
 
 """
 原作者在整个工程里采用了torch.jit,
@@ -26,7 +26,7 @@ class FPN(nn.Module):
         """
         核心问题在于如何使这个网络泛用，支持不定长的层数。
         """
-
+        super().__init__()
         # in_dims按传入顺序为[c3,c4,c5]，但处理顺序为c5,c4,c3
         # 先1x1
         self.lat_layers = nn.ModuleList([
@@ -49,7 +49,7 @@ class FPN(nn.Module):
         self.relu_downsample_layers = False
         self.relu_pred_layers = True
 
-    def forward(self, inpt: list[torch.Tensor]):
+    def forward(self, inpt: List[torch.Tensor]):
         """
         传入顺序为[c3,c4,c5]，但处理顺序为c5,c4,c3
         """
@@ -96,6 +96,7 @@ class InterpolateModule(nn.Module):
 
 class ProtoNet(nn.Module):
     def __init__(self, in_dim, inner_dim=256, out_dim=32):
+        super().__init__()
         self.layers = nn.Sequential(
             nn.Conv2d(in_dim, inner_dim, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
@@ -117,48 +118,33 @@ class ProtoNet(nn.Module):
         return x
 
 
-class Prediction(nn.Module):
-    """
-    The (c) prediction module adapted from DSSD:
-    https://arxiv.org/pdf/1701.06659.pdf
-
-    Note that this is slightly different to the module in the paper
-    because the Bottleneck block actually has a 3x3 convolution in
-    the middle instead of a 1x1 convolution.
-    摘要部分搬运，后面改动
-    """
+class PredictionLayer(nn.Module):
+    """从Prediction类里拆出来的单层,便于控制共享与非共享状态"""
 
     def __init__(self,
                  in_dim,
                  inner_dim=256,
                  mask_dim=32,
                  num_classes=81,
-                 aspect_ratios=[[1, 1 / 2, 2]],
-                 scales=[1],  # [24]/[48]/[96]/[192]/[384]]
-                 index=0,
-                 num_heads=5):
-        self.num_classes = num_classes
-        self.mask_dim = mask_dim
-        self.num_priors = sum(len(x) * len(scales) for x in aspect_ratios)  # 3个ratio*1个sclae=3
-        self.parent = None
-        self.index = index
-        self.num_heads = num_heads  # 不开启split的话没用的参数
-        self.aspect_ratios = aspect_ratios
-        self.scales = scales
+                 num_priors=3,
+                 index=0
+                 ):
+        super().__init__()
 
-        # 可选:默认为false
-        # 1.不同head分割prototype
-        # self.mask_dim = self.mask_dim // self.num_heads
-        # 2.prototypes_as_features
-        # in_channels += self.mask_dim
+        self.mask_dim = mask_dim
+        self.num_classes = num_classes
+        self.num_priors = num_priors
+        self.index = index
 
         # 原作者默认设为True
         self.extra_head_net = True
         if self.extra_head_net:
             self.upfeature = nn.Conv2d(in_dim, inner_dim, kernel_size=3, padding=1)
+        else:
+            assert in_dim == inner_dim, "dims not matched"
 
         # 原作者默认设为False
-        self.use_prediction_module = True
+        self.use_prediction_module = False
         if self.use_prediction_module:
             self.block = Bottleneck(inner_dim, inner_dim // 4)  # 除4因为自带expansion=4
             self.conv = nn.Conv2d(inner_dim, inner_dim, kernel_size=1)
@@ -170,15 +156,6 @@ class Prediction(nn.Module):
         self.bbox_layer = nn.Conv2d(inner_dim, self.num_priors * 4, kernel_size=3, padding=1)
         self.conf_layer = nn.Conv2d(inner_dim, self.num_priors * self.num_classes, kernel_size=3, padding=1)
         self.mask_layer = nn.Conv2d(inner_dim, self.num_priors * self.mask_dim, kernel_size=3, padding=1)
-
-        # use_mask_scoring:false
-        # use_instance_coeff:false
-        # and no extra_layers
-        # no gate_layers
-
-        self.last_img_size = None
-        self.last_conv_size = None
-        self._tmp_img_w, self._tmp_img_h = None, None
 
     def forward(self, x):
         """
@@ -192,18 +169,15 @@ class Prediction(nn.Module):
             - mask_output: [batch_size, conv_h*conv_w*num_priors, mask_dim]
             - prior_boxes: [conv_h*conv_w*num_priors, 4]
         """
-        src = self if self.parent is None else self.parent
-        conv_h = x.size(2)
-        conv_w = x.size(3)
 
         if self.extra_head_net:
-            x = src.upfeature(x)
+            x = self.upfeature(x)
 
         if self.use_prediction_module:
-            a = src.block(x)
+            a = self.block(x)
 
-            b = src.conv(x)
-            b = src.bn(b)
+            b = self.conv(x)
+            b = self.bn(b)
             b = F.relu(b)
 
             x = a + b
@@ -212,12 +186,12 @@ class Prediction(nn.Module):
 
         # (bz,num_priors*4,conv_h,conv_w)->(bz,num_priors*conv_h*conv_w,4)
         # (bz,num_priors*num_classes,conv_h,conv_w)->(bz,num_priors*conv_h*conv_w,num_classes)
-        bbox = src.bbox_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 4)
-        conf = src.conf_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, self.num_classes)
+        bbox = self.bbox_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, 4)
+        conf = self.conf_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, self.num_classes)
 
         # Default True
         if self.eval_mask_branch:
-            mask = src.mask_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, self.mask_dim)
+            mask = self.mask_layer(x).permute(0, 2, 3, 1).contiguous().view(x.size(0), -1, self.mask_dim)
         else:
             mask = torch.zeros(x.size(0), bbox.size(1), self.mask_dim, device=bbox.device)
 
@@ -225,17 +199,105 @@ class Prediction(nn.Module):
             # 默认mask_type=lincomb,使用torch.tanh,反之若=direct,则用sigmoid
             mask = torch.tanh(mask)
 
-        priors = self.make_priors(conv_h, conv_w, x.device)
-        preds = {'loc': bbox, 'conf': conf, 'mask': mask, 'priors': priors}
+        return bbox, conf, mask
 
-        return preds
 
-    def make_priors(self, conv_h, conv_w, device):
+class Prediction(nn.Module):
+    """
+    The (c) prediction module adapted from DSSD:
+    https://arxiv.org/pdf/1701.06659.pdf
+
+    被我魔改了。
+    """
+
+    def __init__(self,
+                 in_dim,
+                 inner_dim=256,
+                 mask_dim=32,
+                 num_classes=81,
+                 aspect_ratios: List[List[int]] = [[1, 1 / 2, 2]],
+                 scales: List[List[int]] = [[24], [48], [96], [192], [384]],  # [[24]/[48]/[96]/[192]/[384]]
+                 num_to_pred=5,
+                 share_weights=True
+                 ):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.mask_dim = mask_dim
+        self.num_priors = sum(len(x) * len(scales[0]) for x in aspect_ratios)  # 3个ratio*1个sclae=3
+        self.num_layers = num_to_pred
+        assert len(scales)==self.num_layers,"each pred_layer must correspond to one scale"
+
+        self.aspect_ratios = aspect_ratios
+        self.scales = scales
+        self.share_weights = share_weights
+
+        if self.share_weights:
+            # 共享时，只有一个layer
+            self.pred_layer = PredictionLayer(in_dim, inner_dim,
+                                              mask_dim, num_classes,
+                                              self.num_priors)
+        else:
+            self.pred_layers = nn.ModuleList([
+                PredictionLayer(in_dim, inner_dim,
+                                mask_dim, num_classes,
+                                self.num_priors,
+                                index=idx)
+                for idx in range(self.num_layers)]
+            )
+
+        # self.last_img_size = None
+        # self.last_conv_size = None
+        # self._tmp_img_w = None
+        # self._tmp_img_h = None
+        self.prior_cache = {}
+
+    def forward(self, inputs):
+        """
+        inputs: list of p_i
+        """
+        pred_outs = {'bbox': [], 'conf': [], 'mask': [], 'priors': []}
+
+        for idx in range(self.num_layers):
+            pred_x = inputs[idx]  # P_i
+            _, _, conv_h, conv_w = pred_x.shape
+
+            if self.share_weights:
+                bbox, conf, mask = self.pred_layer(pred_x)
+            else:
+                bbox, conf, mask = self.pred_layers[idx](pred_x)
+
+            priors = self.make_priors(conv_h, conv_w,
+                                      self.aspect_ratios,
+                                      self.scales[idx],
+                                      pred_x.device)
+
+            pred_outs['bbox'].append(bbox)
+            pred_outs['conf'].append(conf)
+            pred_outs['mask'].append(mask)
+            pred_outs['priors'].append(priors)
+
+        for k, v in pred_outs.items():
+            pred_outs[k] = torch.cat(v, -2)
+
+        # 5个bbox经过concat得到 (bz, sum(num_prior*hi*wi), 4)
+        # 5个conf经过concat得到 (bz, sum(num_prior*hi*wi), num_classes)
+        # 5个mask经过concat得到 (bz, sum(num_prior*hi*wi), 32)
+        # 5个priors经过concat得到 (sum(num_prior*hi*wi),, 4)
+
+        return pred_outs
+
+    def make_priors(self, conv_h, conv_w, aspect_ratios, scales, device):
         """ Note that priors are [x,y,width,height] where (x,y) is the center of the box. """
+        """删去了多卡并行能力"""
         size = (conv_h, conv_w)
-        if self.last_img_size != (self._tmp_img_w, self._tmp_img_h):
-            prior_data = []
 
+        if self.prior_cache[size] is not None:
+            # 如果本batch的尺寸过去已存在，则不必生成新的先验框。
+            self.priors = self.prior_cache[size]
+            return self.priors
+        else:
+            prior_data = []
             # Iteration order is important (it has to sync up with the convout)
             for j, i in itertools.product(range(conv_h), range(conv_w)):
                 # +0.5 because priors are in center-size notation
@@ -244,8 +306,8 @@ class Prediction(nn.Module):
 
                 # aspect_ratios: [[1, 1/2, 2]], shape=(1,3)
                 # scales: [24] or [48] or [96] or [192] or [384],shape=(1)
-                for ars in self.aspect_ratios:
-                    for scale in self.scales:
+                for ars in aspect_ratios:
+                    for scale in scales:
                         for ar in ars:
 
                             # Defalut True,max_size=550
@@ -261,40 +323,25 @@ class Prediction(nn.Module):
                             # This is for backward compatability with a bug where I made everything square by accident
                             self.backbone.use_square_anchors = True
                             if self.backbone.use_square_anchors:
-                                # True,只使用正方形anchor
+                                # Default True,只使用正方形anchor
                                 h = w
 
-                            # 这个函数写的冗余，wh都是复用的。
                             prior_data += [x, y, w, h]
 
             self.priors = torch.Tensor(prior_data, device=device).view(-1, 4).detach()
             self.priors.requires_grad = False
-            self.last_img_size = (self._tmp_img_w, self._tmp_img_h)
-            self.last_conv_size = (conv_w, conv_h)
+            # 填充cache
+            self.prior_cache[size] = self.priors
 
-            # prior_cache[size] = None
-            # 为什么要强行置为空呢？如果过去曾经生成过这个size，为什么不从过去的cache里提取？就这也配叫cache吗？
-            # 删除关于prior_cache的部分也不影响运行。
-
-        elif self.priors.device != device:
-            # 如果本batch的尺寸同上batch，则不必生成新的先验框。
-            self.priors = self.priors.to(device)
-
-            # 这个并行部分看的不是很明白，感觉有些冗余。
-            # # This whole weird situation is so that DataParalell doesn't copy the priors each iteration
-            # if prior_cache[size] is None:
-            #     prior_cache[size] = {}
-            #
-            # if device not in prior_cache[size]:
-            #     prior_cache[size][device] = self.priors
+        # self.last_img_size = (self._tmp_img_w, self._tmp_img_h)
+        # self.last_conv_size = (conv_w, conv_h)
 
         return self.priors
 
 
-
 class Yolact(nn.Module):
     """
-    implemented by qq
+    revised by qq
     """
 
     def __init__(self,
@@ -302,10 +349,10 @@ class Yolact(nn.Module):
                  selected_layers=[1, 2, 3],
                  fpn_dim=256,
                  num_downsample=2,
-                 pred_aspect_ratios=[],
-                 pred_scales=[],
+                 pred_aspect_ratios=[[1, 1 / 2, 2]],
+                 pred_scales=[[24], [48], [96], [192], [384]],  # 启用共享时， #[[24], [48], [96], [192], [384]]
                  ):
-
+        super().__init__()
         self.num_classes = num_classes
         self.mask_dim = 32
         self.num_grids = 0  # 不使用grid
@@ -324,34 +371,21 @@ class Yolact(nn.Module):
                        out_dim=fpn_dim, num_downsample=num_downsample)
 
         # 经过fpn后，[0,1,2,3,4] 现在有5个层
-        self.num_pred_layers = len(selected_layers) + num_downsample
+        self.num_to_pred = len(selected_layers) + num_downsample
 
         # 3.protonet
         self.proto_net = ProtoNet(in_dim=fpn_dim, inner_dim=256, out_dim=32)
 
         # 4.prediction_module
         # 原作者在yolact1.0中采用共享，yolact++中关闭共享。所以需要同时支持开关。
-        # 他那种写法不太符合我的习惯，这里改写一下。
+        # 他那种写法不太符合我的习惯，这里改写一下。加了一层抽象。
         self.share_prediction_module = True
-        if self.share_prediction_module:
-            # 开启共享时，本质上只有一层。
-            self.prediction_layers = Prediction(in_dim=fpn_dim, inner_dim=256, mask_dim=32,
-                                                num_classes=self.num_classes,
-                                                aspect_ratios=pred_aspect_ratios,
-                                                scales=pred_scales)
-        else:
-            # 关闭共享时，就是一个list对list了
-            self.prediction_layers = nn.ModuleList()
-            for i in range(self.num_pred_layers):
-                pred = Prediction(in_dim=fpn_dim,
-                                  inner_dim=256,
-                                  mask_dim=32,
-                                  num_classes=self.num_classes,
-                                  aspect_ratios=pred_aspect_ratios[i],
-                                  scales=pred_scales[i],
-                                  index=i
-                                  )
-                self.prediction_layers.append(pred)
+        self.prediction = Prediction(in_dim=fpn_dim, inner_dim=256, mask_dim=32,
+                                     num_classes=num_classes,
+                                     aspect_ratios=pred_aspect_ratios,
+                                     scales=pred_scales,
+                                     num_to_pred = self.num_to_pred,
+                                     share_weights=self.share_prediction_module)
 
         # Default True in 1.0
         self.use_semantic_segmentation_loss = True
@@ -360,30 +394,61 @@ class Yolact(nn.Module):
 
         # 5.detection,for use in evaluation
         self.detection = Detect(self.num_classes,
-                                   bkg_label=0,
-                                   top_k=200,
-                                   conf_thresh=0.05, #nms_conf_thresh
-                                   nms_thresh=0.5)
-
-
-from utils.models.detection import Detect
+                                bkg_label=0,
+                                top_k=200,
+                                conf_thresh=0.05,  # nms_conf_thresh
+                                nms_thresh=0.5)
 
     def forward(self, x):
+        """ The input should be of size [batch_size, 3, img_h, img_w] """
 
+        # 1.backbone
+        outs = self.backbone(x)
 
+        # 2.fpn
+        outs = [outs[i] for i in self.selected_layers]  # i=1,2,3,选中C3,C4,C5
+        outs = self.fpn(outs)  # outs=[P3,P4,P5,P6,P7]
 
+        # 3.protonet
+        proto_out = None
+        self.proto_src = 0  # 采用作者1.0参数
+        # proto_x=outs[0] = P3,shape=(bz,256,p3_h,p3_w)
+        proto_x = outs[self.proto_src]
 
+        # 不使用grid,grid相关部分删去
 
+        proto_out = self.proto_net(proto_x)  # (bz, 32,70,70)
+        # 根据1.0参数，虽然protonet里面最后一层不接relu，但是在forward里面又用了relu
+        # 直接集成到protonet里面去不好吗，为什么这样折腾自己。
+        proto_out = F.relu(proto_out)
 
+        # Move the features last so the multiplication is easy
+        proto_out = proto_out.permute(0, 2, 3, 1).contiguous()  # (bz,70,70,32)
 
+        # 4.prediction，输出需要转一次名字，
+        # DSSD的prediction里面叫bbox，在yolact里面又改名loc，不知道为什么要改名。
+        pred_y = self.prediction(outs)  # 将[P3,P4,P5,P6,P7]作为输入
 
+        pred_outs = {'loc': pred_y['bbox'],
+                     'conf': pred_y['conf'],
+                     'mask': pred_y['mask'],
+                     'priors':pred_y['priors']}
 
+        # 将proto_out加入到输出中，shape=(bz,70,70,32)
+        if proto_out is not None:
+            pred_outs['proto'] = proto_out
 
-
-
-
-
-
+        if self.training:
+            # Default True
+            if self.use_semantic_segmentation_loss:
+                # 又用outs[0],即P3作输入
+                pred_outs['segm'] = self.semantic_seg_conv(outs[0])
+            return pred_outs
+        else:
+            # eval时，仅对分类预测结果进行detect，因为我们只关注mAP与FPS
+            # conf.shape = (bz, 5*num_prior*h*w, num_classes)
+            pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
+            return self.detect(pred_outs, self)
 
     # 其他功能函数
     def train(self, mode=True):
@@ -399,78 +464,78 @@ from utils.models.detection import Detect
                 module.weight.requires_grad = enable
                 module.bias.requires_grad = enable
 
-    def save_weights(self, path):
-        """ Saves the model's weights using compression because the file sizes were getting too big. """
-        torch.save(self.state_dict(), path)
-
-    def load_weights(self, path):
-        """ Loads weights from a compressed save file. """
-        state_dict = torch.load(path)
-
-        # For backward compatability, remove these (the new variable is called layers)
-        for key in list(state_dict.keys()):
-            if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):
-                del state_dict[key]
-
-            # Also for backward compatibility with v1.0 weights, do this check
-            if key.startswith('fpn.downsample_layers.'):
-                if cfg.fpn is not None and int(key.split('.')[2]) >= cfg.fpn.num_downsample:
-                    del state_dict[key]
-        self.load_state_dict(state_dict)
-
-    def init_weights(self, backbone_path):
-        """ Initialize weights for training. """
-        # Initialize the backbone with the pretrained weights.
-        self.backbone.init_backbone(backbone_path)
-
-        conv_constants = getattr(nn.Conv2d(1, 1, 1), '__constants__')
-
-        # Quick lambda to test if one list contains the other
-        def all_in(x, y):
-            for _x in x:
-                if _x not in y:
-                    return False
-            return True
-
-        # Initialize the rest of the conv layers with xavier
-        for name, module in self.named_modules():
-            # See issue #127 for why we need such a complicated condition if the module is a WeakScriptModuleProxy
-            # Broke in 1.3 (see issue #175), WeakScriptModuleProxy was turned into just ScriptModule.
-            # Broke in 1.4 (see issue #292), where RecursiveScriptModule is the new star of the show.
-            # Note that this might break with future pytorch updates, so let me know if it does
-            is_script_conv = False
-            if 'Script' in type(module).__name__:
-                # 1.4 workaround: now there's an original_name member so just use that
-                if hasattr(module, 'original_name'):
-                    is_script_conv = 'Conv' in module.original_name
-                # 1.3 workaround: check if this has the same constants as a conv module
-                else:
-                    is_script_conv = (
-                            all_in(module.__dict__['_constants_set'], conv_constants)
-                            and all_in(conv_constants, module.__dict__['_constants_set']))
-
-            is_conv_layer = isinstance(module, nn.Conv2d) or is_script_conv
-
-            if is_conv_layer and module not in self.backbone.backbone_modules:
-                nn.init.xavier_uniform_(module.weight.data)
-
-                if module.bias is not None:
-                    if cfg.use_focal_loss and 'conf_layer' in name:
-                        if not cfg.use_sigmoid_focal_loss:
-                            # Initialize the last layer as in the focal loss paper.
-                            # Because we use softmax and not sigmoid, I had to derive an alternate expression
-                            # on a notecard. Define pi to be the probability of outputting a foreground detection.
-                            # Then let z = sum(exp(x)) - exp(x_0). Finally let c be the number of foreground classes.
-                            # Chugging through the math, this gives us
-                            #   x_0 = log(z * (1 - pi) / pi)    where 0 is the background class
-                            #   x_i = log(z / c)                for all i > 0
-                            # For simplicity (and because we have a degree of freedom here), set z = 1. Then we have
-                            #   x_0 =  log((1 - pi) / pi)       note: don't split up the log for numerical stability
-                            #   x_i = -log(c)                   for all i > 0
-                            module.bias.data[0] = np.log((1 - cfg.focal_loss_init_pi) / cfg.focal_loss_init_pi)
-                            module.bias.data[1:] = -np.log(module.bias.size(0) - 1)
-                        else:
-                            module.bias.data[0] = -np.log(cfg.focal_loss_init_pi / (1 - cfg.focal_loss_init_pi))
-                            module.bias.data[1:] = -np.log((1 - cfg.focal_loss_init_pi) / cfg.focal_loss_init_pi)
-                    else:
-                        module.bias.data.zero_()
+    # def save_weights(self, path):
+    #     """ Saves the model's weights using compression because the file sizes were getting too big. """
+    #     torch.save(self.state_dict(), path)
+    #
+    # def load_weights(self, path):
+    #     """ Loads weights from a compressed save file. """
+    #     state_dict = torch.load(path)
+    #
+    #     # For backward compatability, remove these (the new variable is called layers)
+    #     for key in list(state_dict.keys()):
+    #         if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):
+    #             del state_dict[key]
+    #
+    #         # Also for backward compatibility with v1.0 weights, do this check
+    #         if key.startswith('fpn.downsample_layers.'):
+    #             if cfg.fpn is not None and int(key.split('.')[2]) >= cfg.fpn.num_downsample:
+    #                 del state_dict[key]
+    #     self.load_state_dict(state_dict)
+    #
+    # def init_weights(self, backbone_path):
+    #     """ Initialize weights for training. """
+    #     # Initialize the backbone with the pretrained weights.
+    #     self.backbone.init_backbone(backbone_path)
+    #
+    #     conv_constants = getattr(nn.Conv2d(1, 1, 1), '__constants__')
+    #
+    #     # Quick lambda to test if one list contains the other
+    #     def all_in(x, y):
+    #         for _x in x:
+    #             if _x not in y:
+    #                 return False
+    #         return True
+    #
+    #     # Initialize the rest of the conv layers with xavier
+    #     for name, module in self.named_modules():
+    #         # See issue #127 for why we need such a complicated condition if the module is a WeakScriptModuleProxy
+    #         # Broke in 1.3 (see issue #175), WeakScriptModuleProxy was turned into just ScriptModule.
+    #         # Broke in 1.4 (see issue #292), where RecursiveScriptModule is the new star of the show.
+    #         # Note that this might break with future pytorch updates, so let me know if it does
+    #         is_script_conv = False
+    #         if 'Script' in type(module).__name__:
+    #             # 1.4 workaround: now there's an original_name member so just use that
+    #             if hasattr(module, 'original_name'):
+    #                 is_script_conv = 'Conv' in module.original_name
+    #             # 1.3 workaround: check if this has the same constants as a conv module
+    #             else:
+    #                 is_script_conv = (
+    #                         all_in(module.__dict__['_constants_set'], conv_constants)
+    #                         and all_in(conv_constants, module.__dict__['_constants_set']))
+    #
+    #         is_conv_layer = isinstance(module, nn.Conv2d) or is_script_conv
+    #
+    #         if is_conv_layer and module not in self.backbone.backbone_modules:
+    #             nn.init.xavier_uniform_(module.weight.data)
+    #
+    #             if module.bias is not None:
+    #                 if cfg.use_focal_loss and 'conf_layer' in name:
+    #                     if not cfg.use_sigmoid_focal_loss:
+    #                         # Initialize the last layer as in the focal loss paper.
+    #                         # Because we use softmax and not sigmoid, I had to derive an alternate expression
+    #                         # on a notecard. Define pi to be the probability of outputting a foreground detection.
+    #                         # Then let z = sum(exp(x)) - exp(x_0). Finally let c be the number of foreground classes.
+    #                         # Chugging through the math, this gives us
+    #                         #   x_0 = log(z * (1 - pi) / pi)    where 0 is the background class
+    #                         #   x_i = log(z / c)                for all i > 0
+    #                         # For simplicity (and because we have a degree of freedom here), set z = 1. Then we have
+    #                         #   x_0 =  log((1 - pi) / pi)       note: don't split up the log for numerical stability
+    #                         #   x_i = -log(c)                   for all i > 0
+    #                         module.bias.data[0] = np.log((1 - cfg.focal_loss_init_pi) / cfg.focal_loss_init_pi)
+    #                         module.bias.data[1:] = -np.log(module.bias.size(0) - 1)
+    #                     else:
+    #                         module.bias.data[0] = -np.log(cfg.focal_loss_init_pi / (1 - cfg.focal_loss_init_pi))
+    #                         module.bias.data[1:] = -np.log((1 - cfg.focal_loss_init_pi) / cfg.focal_loss_init_pi)
+    #                 else:
+    #                     module.bias.data.zero_()

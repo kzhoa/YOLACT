@@ -103,9 +103,9 @@ class MultiBoxLoss(nn.Module):
 
         for idx in range(batch_size):
             # 牢记idx指batch_idx
-            # [:-1]表示从开始到倒数第2个，最后一个不取。为什么最后一个不取？？？？
+            # [:-1]表示从开始到倒数第2个，最后一个不取，即(x,y,w,h)
             truths = targets[idx][:, :-1].detach()  # num_objs*[x,y,w,h]
-            labels[idx] = targets[idx][:, -1].detach().long()
+            labels[idx] = targets[idx][:, -1].detach().long() #num_objs*[class_label]
 
             # # False
             # if cfg.use_class_existence_loss:
@@ -121,8 +121,9 @@ class MultiBoxLoss(nn.Module):
                 crowd_boxes, truths = split(truths)
 
                 # We don't use the crowd labels or masks
-                _, labels[idx] = split(labels[idx])
+                _, labels[idx] = split(labels[idx]) #[num_objs-cur_crowds,5]
                 _, masks[idx] = split(masks[idx])  # labels最后一个没取，masks却取了，这样不是不匹配吗
+
             else:
                 crowd_boxes = None
 

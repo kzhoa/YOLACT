@@ -215,12 +215,14 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
         best_truth_idx[i] = j
 
     # 上面这个循环有个问题。如果num_objects<num_priors，
+    # 由于每次会对一行赋值-1
     # 循环到次数大于如果num_objects后，整个overlaps就全部-1了
-    # 这之后的操作全部都是取[0,0]点，没有意义
+    # 这之后的操作全部都是取[0,0]点，没有意义,
+    # 且best_truth_idx[0]会被强制设为0，丢失有效的那个对象。
     # 这个循环仅当num_objects==num_priors时才有价值。
 
     matches = truths[best_truth_idx]  # Shape: [num_priors,4]
-    conf = labels[best_truth_idx] + 1  # Shape: [num_priors]
+    conf = labels[best_truth_idx] + 1  # Shape: [num_priors] 为什么+1看不懂
 
     conf[best_truth_overlap < pos_thresh] = -1  # label as neutral
     conf[best_truth_overlap < neg_thresh] = 0  # label as background

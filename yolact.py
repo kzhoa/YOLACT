@@ -289,10 +289,13 @@ class Prediction(nn.Module):
 
     def make_priors(self, conv_h, conv_w, aspect_ratios, scales, device):
         """ Note that priors are [x,y,width,height] where (x,y) is the center of the box. """
-        """删去了多卡并行能力"""
+        """删去了多卡并行能力，输出(x,y,w,h)"""
         size = (conv_h, conv_w)
 
-        if self.prior_cache[size] is not None:
+        flg=False
+        #if self.prior_cache[size] is not None:
+        #这个写法有点问题，因为size一样不够，还需要scales[idx]一样。
+        if flg:
             # 如果本batch的尺寸过去已存在，则不必生成新的先验框。
             self.priors = self.prior_cache[size]
             return self.priors

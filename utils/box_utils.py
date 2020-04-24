@@ -5,7 +5,6 @@ import torch
 #from data import cfg
 
 
-@torch.jit.script
 def point_form(boxes):
     """ Convert prior_boxes to (xmin, ymin, xmax, ymax)
     representation for comparison to point form ground truth data.
@@ -18,7 +17,6 @@ def point_form(boxes):
                       boxes[:, :2] + boxes[:, 2:] / 2), 1)  # xmax, ymax
 
 
-@torch.jit.script
 def center_size(boxes):
     """ Convert prior_boxes to (cx, cy, w, h)
     representation for comparison to center-size form ground truth data.
@@ -31,7 +29,6 @@ def center_size(boxes):
                       boxes[:, 2:] - boxes[:, :2]), 1)  # w, h
 
 
-@torch.jit.script
 def intersect(box_a, box_b):
     """ We resize both tensors to [A,B,2] without new malloc:
     [A,2] -> [A,1,2] -> [A,B,2]
@@ -179,15 +176,13 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
         The matched indices corresponding to 1)location and 2)confidence preds.
     """
 
-    # False,point_form效果是变成(x1,y1,x2,y2)
-    # (num_priors,4)
-    decoded_priors = decode(loc_data, priors, cfg.use_yolo_regressors) if cfg.use_prediction_matching else point_form(
-        priors)
+    # 默认 False，直接简化
+    # point_form效果是变成(x1,y1,x2,y2)
+    decoded_priors =point_form(priors)# (num_priors,4)
+    # cfg设置默认False,会调用jaccard，直接简化
+    overlaps = jaccard(truths, decoded_priors)# Size [num_objects, num_priors]
 
-    # False,会调用jaccard
-    # Size [num_objects, num_priors]
-    overlaps = jaccard(truths, decoded_priors) if not cfg.use_change_matching else change(truths, decoded_priors)
-
+    #对每个prior，找到一个IOU最高的gt_box
     # Size [num_priors] best ground truth for each prior
     best_truth_overlap, best_truth_idx = overlaps.max(0)
 
@@ -235,7 +230,6 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
     idx_t[idx] = best_truth_idx  # [num_priors] indices for lookup
 
 
-@torch.jit.script
 def encode(matched, priors, use_yolo_regressors: bool = False):
     """
     Encode bboxes matched with each prior into the format
@@ -274,7 +268,7 @@ def encode(matched, priors, use_yolo_regressors: bool = False):
     return loc
 
 
-@torch.jit.script
+
 def decode(loc, priors, use_yolo_regressors: bool = False):
     """
     Decode predicted bbox coordinates using the same scheme
@@ -333,7 +327,7 @@ def log_sum_exp(x):
     return torch.log(torch.sum(torch.exp(x - x_max), 1)) + x_max
 
 
-@torch.jit.script
+
 def sanitize_coordinates(_x1, _x2, img_size: int, padding: int = 0, cast: bool = True):
     """
     Sanitizes the input coordinates so that x1 < x2, x1 != x2, x1 >= 0, and x2 <= image_size.
@@ -355,7 +349,7 @@ def sanitize_coordinates(_x1, _x2, img_size: int, padding: int = 0, cast: bool =
     return x1, x2
 
 
-@torch.jit.script
+
 def crop(masks, boxes, padding: int = 1):
     """
     "Crop" predicted masks by zeroing out everything not in the predicted bbox.

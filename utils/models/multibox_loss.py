@@ -43,7 +43,8 @@ class MultiBoxLoss(nn.Module):
         self.l1_alpha = 0.1
 
         # False
-        if cfg.use_class_balanced_conf:
+        self.use_class_balanced_conf = False
+        if self.use_class_balanced_conf:
             self.class_instances = None
             self.total_instances = 0
 
@@ -75,40 +76,43 @@ class MultiBoxLoss(nn.Module):
         mask_data = predictions['mask']  # (bz, 5*num_prior*h*w, 32)
         priors = predictions['priors']  # (5*num_prior*h*w, 4)
 
-        if cfg.mask_type == mask_type.lincomb:
-            proto_data = predictions['proto']
+        # 默认就是lincomb,linearcombination
+        # if self.mask_type == mask_type.lincomb:
+        proto_data = predictions['proto']
 
-        score_data = predictions['score'] if cfg.use_mask_scoring else None  # None
-        inst_data = predictions['inst'] if cfg.use_instance_coeff else None  # None
+        score_data = predictions['score'] if self.use_mask_scoring else None  # False->None
+        inst_data = predictions['inst'] if self.use_instance_coeff else None  # False->None
 
-        labels = [None] * len(targets)  # Used in sem segm loss #这里len()的返回是batchsize
+        # Used in sem segm loss #这里len()的返回是batchsize
+        labels = [None] * len(targets)
 
         batch_size = loc_data.size(0)
-        num_priors = priors.size(0)  # num_priors = 5*num_prior*h*w
-        num_classes = self.num_classes
+        num_priors = priors.size(0)  # num_priors = sum(num_prior*hi*wi),i=3~7
 
         # Match priors (default boxes) and ground truth boxes
         # These tensors will be created with the same device as loc_data
-        loc_t = loc_data.new(batch_size, num_priors, 4)  # new的作用是复制type和device
+        # new的作用是复制type和device，所以下面这4个的值都是随机初始化的，之后要赋值。
+        loc_t = loc_data.new(batch_size, num_priors, 4)
         gt_box_t = loc_data.new(batch_size, num_priors, 4)
         conf_t = loc_data.new(batch_size, num_priors).long()
         idx_t = loc_data.new(batch_size, num_priors).long()
 
-        # False
-        if cfg.use_class_existence_loss:
-            class_existence_t = loc_data.new(batch_size, num_classes - 1)
+        # # False
+        # if cfg.use_class_existence_loss:
+        #     class_existence_t = loc_data.new(batch_size, self.num_classes - 1)
 
         for idx in range(batch_size):
             # 牢记idx指batch_idx
-            truths = targets[idx][:, :-1].data  # num_objs*[x,y,w,h]
-            labels[idx] = targets[idx][:, -1].data.long()
+            # [:-1]表示从开始到倒数第2个，最后一个不取。为什么最后一个不取？？？？
+            truths = targets[idx][:, :-1].detach()  # num_objs*[x,y,w,h]
+            labels[idx] = targets[idx][:, -1].detach().long()
 
-            # False
-            if cfg.use_class_existence_loss:
-                # Construct a one-hot vector for each object and collapse it into an existence vector with max
-                # Also it's fine to include the crowd annotations here
-                class_existence_t[idx, :] = \
-                torch.eye(num_classes - 1, device=conf_t.get_device())[labels[idx]].max(dim=0)[0]
+            # # False
+            # if cfg.use_class_existence_loss:
+            #     # Construct a one-hot vector for each object and collapse it into an existence vector with max
+            #     # Also it's fine to include the crowd annotations here
+            #     class_existence_t[idx, :] = \
+            #     torch.eye(self.num_classes - 1, device=conf_t.get_device())[labels[idx]].max(dim=0)[0]
 
             # Split the crowd annotations because they come bundled in
             cur_crowds = num_crowds[idx]
@@ -118,11 +122,12 @@ class MultiBoxLoss(nn.Module):
 
                 # We don't use the crowd labels or masks
                 _, labels[idx] = split(labels[idx])
-                _, masks[idx] = split(masks[idx])
+                _, masks[idx] = split(masks[idx])  # labels最后一个没取，masks却取了，这样不是不匹配吗
             else:
                 crowd_boxes = None
 
             # 这个没有返回值的函数，利用可变参数传引用，原地修改
+            # 对之前随机初始化的4个东西match后赋值
             match(self.pos_threshold, self.neg_threshold,
                   truths, priors.data, labels[idx], crowd_boxes,
                   loc_t, conf_t, idx_t, idx, loc_data[idx])

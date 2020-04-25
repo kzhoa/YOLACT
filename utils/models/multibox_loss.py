@@ -105,7 +105,7 @@ class MultiBoxLoss(nn.Module):
             # 牢记idx指batch_idx
             # [:-1]表示从开始到倒数第2个，最后一个不取，即(x,y,w,h)
             truths = targets[idx][:, :-1].detach()  # num_objs*[x,y,w,h]
-            labels[idx] = targets[idx][:, -1].detach().long() #num_objs*[class_label]
+            labels[idx] = targets[idx][:, -1].detach().long()  # num_objs*[class_label]
 
             # # False
             # if cfg.use_class_existence_loss:
@@ -121,8 +121,8 @@ class MultiBoxLoss(nn.Module):
                 crowd_boxes, truths = split(truths)
 
                 # We don't use the crowd labels or masks
-                _, labels[idx] = split(labels[idx]) #[num_objs-cur_crowds,5]
-                _, masks[idx] = split(masks[idx])  # labels最后一个没取，masks却取了，这样不是不匹配吗
+                _, labels[idx] = split(labels[idx])  # [num_objs-cur_crowds,5]
+                _, masks[idx] = split(masks[idx])  # [num_objs-cur_crowds,5]
 
             else:
                 crowd_boxes = None
@@ -147,62 +147,63 @@ class MultiBoxLoss(nn.Module):
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
 
         losses = {}
-
+        self.bbox_alpha = 1.5 #默认参数
         # Localization Loss (Smooth L1)
-        if cfg.train_boxes:
-            loc_p = loc_data[pos_idx].view(-1, 4)
-            loc_t = loc_t[pos_idx].view(-1, 4)
-            losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * cfg.bbox_alpha
+        # 总是train_box
+        loc_p = loc_data[pos_idx].view(-1, 4)
+        loc_t = loc_t[pos_idx].view(-1, 4)
+        losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * self.bbox_alpha
 
-        if cfg.train_masks:
-            if cfg.mask_type == mask_type.direct:
-                if cfg.use_gt_bboxes:
-                    pos_masks = []
-                    for idx in range(batch_size):
-                        pos_masks.append(masks[idx][idx_t[idx, pos[idx]]])
-                    masks_t = torch.cat(pos_masks, 0)
-                    masks_p = mask_data[pos, :].view(-1, cfg.mask_dim)
-                    losses['M'] = F.binary_cross_entropy(torch.clamp(masks_p, 0, 1), masks_t,
-                                                         reduction='sum') * cfg.mask_alpha
-                else:
-                    losses['M'] = self.direct_mask_loss(pos_idx, idx_t, loc_data, mask_data, priors, masks)
-            elif cfg.mask_type == mask_type.lincomb:
-                ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t,
-                                             score_data, inst_data, labels)
-                if cfg.use_maskiou:
-                    loss, maskiou_targets = ret
-                else:
-                    loss = ret
-                losses.update(loss)
+        # 总数train_mask, type为lincomb
+        ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t,
+                                     score_data, inst_data, labels)
 
-                if cfg.mask_proto_loss is not None:
-                    if cfg.mask_proto_loss == 'l1':
-                        losses['P'] = torch.mean(torch.abs(proto_data)) / self.l1_expected_area * self.l1_alpha
-                    elif cfg.mask_proto_loss == 'disj':
-                        losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
+        #++版本true,1.0版本false
+        self.use_maskiou = False
+        if self.use_maskiou:
+            loss, maskiou_targets = ret
+        else:
+            loss = ret
+        losses.update(loss)
+
+        # #默认None
+        # if cfg.mask_proto_loss is not None:
+        #     if cfg.mask_proto_loss == 'l1':
+        #         losses['P'] = torch.mean(torch.abs(proto_data)) / self.l1_expected_area * self.l1_alpha
+        #     elif cfg.mask_proto_loss == 'disj':
+        #         losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
 
         # Confidence loss
-        if cfg.use_focal_loss:
-            if cfg.use_sigmoid_focal_loss:
+        #默认False
+        self.use_focal_loss = False
+        self.use_sigmoid_focal_loss = False  # 默认参数
+        self.use_objectness_score = False
+        if self.use_focal_loss:
+
+            if self.use_sigmoid_focal_loss:
                 losses['C'] = self.focal_conf_sigmoid_loss(conf_data, conf_t)
-            elif cfg.use_objectness_score:
+            elif self.use_objectness_score:
                 losses['C'] = self.focal_conf_objectness_loss(conf_data, conf_t)
             else:
                 losses['C'] = self.focal_conf_loss(conf_data, conf_t)
         else:
-            if cfg.use_objectness_score:
+            if self.use_objectness_score:
                 losses['C'] = self.conf_objectness_loss(conf_data, conf_t, batch_size, loc_p, loc_t, priors)
             else:
                 losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
 
         # Mask IoU Loss
-        if cfg.use_maskiou and maskiou_targets is not None:
+        #默认False，++版本True
+        if self.use_maskiou and maskiou_targets is not None:
             losses['I'] = self.mask_iou_loss(net, maskiou_targets)
 
         # These losses also don't depend on anchors
-        if cfg.use_class_existence_loss:
-            losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
-        if cfg.use_semantic_segmentation_loss:
+        # self.use_class_existence_loss =False#默认参数
+        # if self.use_class_existence_loss:
+        #     losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
+
+        self.use_semantic_segmentation_loss = True #默认参数
+        if self.use_semantic_segmentation_loss:
             losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
 
         # Divide all losses by the number of positives.
@@ -225,7 +226,8 @@ class MultiBoxLoss(nn.Module):
         return losses
 
     def class_existence_loss(self, class_data, class_existence_t):
-        return cfg.class_existence_alpha * F.binary_cross_entropy_with_logits(class_data, class_existence_t,
+        class_existence_alpha = 1.0 #默认参数
+        return class_existence_alpha * F.binary_cross_entropy_with_logits(class_data, class_existence_t,
                                                                               reduction='sum')
 
     def semantic_segmentation_loss(self, segment_data, mask_t, class_t, interpolation_mode='bilinear'):
@@ -250,12 +252,15 @@ class MultiBoxLoss(nn.Module):
 
             loss_s += F.binary_cross_entropy_with_logits(cur_segment, segment_t, reduction='sum')
 
-        return loss_s / mask_h / mask_w * cfg.semantic_segmentation_alpha
+        self.semantic_segmentation_alpha=1 #1.0参数
+        return loss_s / mask_h / mask_w * self.semantic_segmentation_alpha
 
     def ohem_conf_loss(self, conf_data, conf_t, pos, num):
         # Compute max conf across batch for hard negative mining
         batch_conf = conf_data.view(-1, self.num_classes)
-        if cfg.ohem_use_most_confident:
+
+        self.ohem_use_most_confident = False#默认参数
+        if self.ohem_use_most_confident:
             # i.e. max(softmax) along classes > 0
             batch_conf = F.softmax(batch_conf, dim=1)
             loss_c, _ = batch_conf[:, 1:].max(dim=1)
@@ -284,7 +289,9 @@ class MultiBoxLoss(nn.Module):
         targets_weighted = conf_t[(pos + neg).gt(0)]
         loss_c = F.cross_entropy(conf_p, targets_weighted, reduction='none')
 
-        if cfg.use_class_balanced_conf:
+        #默认参数False
+        self.use_class_balanced_conf = False
+        if self.use_class_balanced_conf:
             # Lazy initialization
             if self.class_instances is None:
                 self.class_instances = torch.zeros(self.num_classes, device=targets_weighted.device)
@@ -306,7 +313,8 @@ class MultiBoxLoss(nn.Module):
         else:
             loss_c = loss_c.sum()
 
-        return cfg.conf_alpha * loss_c
+        self.conf_alpha = 1.0
+        return self.conf_alpha * loss_c
 
     def focal_conf_loss(self, conf_data, conf_t):
         """

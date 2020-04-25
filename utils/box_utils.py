@@ -166,7 +166,7 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
     Args:
         pos_thresh: (float) IoU > pos_thresh ==> positive.
         neg_thresh: (float) IoU < neg_thresh ==> negative.
-        truths: (tensor) Ground truth boxes, Shape: [num_obj, num_priors].
+        truths: (tensor) Ground truth boxes, Shape: [num_obj, num_priors]. #这里应该写错了，truths_shape=[num_obj,4],需要(x,y,w,h)
         priors: (tensor) Prior boxes from priorbox layers, Shape: [n_priors,4].
         labels: (tensor) All the class labels for the image, Shape: [num_obj].
         crowd_boxes: (tensor) All the crowd box annotations or None if there are none.
@@ -178,9 +178,10 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
     Return:
         The matched indices corresponding to 1)location and 2)confidence preds.
     """
+    #match函数是对一张图片使用的。
 
     # 默认 False，直接简化
-    # point_form效果是变成(x1,y1,x2,y2)
+    # 传入为*x,y,w,h),point_form效果是变成(x1,y1,x2,y2)
     decoded_priors = point_form(priors)  # (num_priors,4)
     # cfg设置默认False,会调用jaccard，直接简化
     overlaps = jaccard(truths, decoded_priors)  # Size [num_objects, num_priors]
@@ -193,6 +194,7 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
     # We want to ensure that each gt gets used at least once so that we don't
     # waste any training data. In order to do that, find the max overlap anchor
     # with each gt, and force that anchor to use that gt.
+    # 只循环num_obj次，每次填充一行为-1。
     for _ in range(overlaps.size(0)):
         # 先找一个全局得分最高的gt_box，多个最大值取先遇到的。
         # Find j, the gt with the highest overlap with a prior
@@ -214,29 +216,29 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
         # Set the gt to be used for i to be j, overwriting whatever was there
         best_truth_idx[i] = j
 
-    # 上面这个循环有个问题。如果num_objects<num_priors，
-    # 由于每次会对一行赋值-1
-    # 循环到次数大于如果num_objects后，整个overlaps就全部-1了
-    # 这之后的操作全部都是取[0,0]点，没有意义,
-    # 且best_truth_idx[0]会被强制设为0，丢失有效的那个对象。
-    # 这个循环仅当num_objects==num_priors时才有价值。
+    # 结束循环后，若num_obj<num_priors,就有可能出现2个prior共用一个gt_box的情况。
 
-    matches = truths[best_truth_idx]  # Shape: [num_priors,4]
-    conf = labels[best_truth_idx] + 1  # Shape: [num_priors] 为什么+1看不懂
+    #为每个prior找到自己的gtbox
+    matches = truths[best_truth_idx]  # Shape: [num_priors,4],注意是num_priors个gt_box坐标。
+    conf = labels[best_truth_idx] + 1  # Shape: [num_priors]
+    # 为什么+1 为什么+1 为什么+1 为什么+1 为什么+1??????????????
 
     conf[best_truth_overlap < pos_thresh] = -1  # label as neutral
     conf[best_truth_overlap < neg_thresh] = 0  # label as background
 
     # Deal with crowd annotations for COCO
-    if crowd_boxes is not None and cfg.crowd_iou_threshold < 1:
+    crowd_iou_threshold = 0.7  # Default in yolact1.0,与crowdbox的IOU大于阈值则视为中性。
+    if crowd_boxes is not None and crowd_iou_threshold < 1:
         # Size [num_priors, num_crowds]
         crowd_overlaps = jaccard(decoded_priors, crowd_boxes, iscrowd=True)
         # Size [num_priors]
         best_crowd_overlap, best_crowd_idx = crowd_overlaps.max(1)
         # Set non-positives with crowd iou of over the threshold to be neutral.
-        conf[(conf <= 0) & (best_crowd_overlap > cfg.crowd_iou_threshold)] = -1
+        conf[(conf <= 0) & (best_crowd_overlap > crowd_iou_threshold)] = -1
 
-    loc = encode(matches, priors, cfg.use_yolo_regressors)
+    # 注意，这里传进去用的是(x,y,w,h)格式的priors，而不是decoded版本。
+    # 返回的是num_priors*(x',y',w',h')
+    loc = encode(matches, priors, use_yolo_regressors=False)
     loc_t[idx] = loc  # [num_priors,4] encoded offsets to learn
     conf_t[idx] = conf  # [num_priors] top class label for each prior
     idx_t[idx] = best_truth_idx  # [num_priors] indices for lookup
@@ -249,12 +251,14 @@ def encode(matched, priors, use_yolo_regressors: bool = False):
     this format. Note that encode(decode(x, p), p) = x.
 
     Args:
-        - matched: A tensor of bboxes in point form with shape [num_priors, 4]
-        - priors:  The tensor of all priors with shape [num_priors, 4]
+        - matched: A tensor of bboxes in point form with shape [num_priors, 4],(x1,y1,x2,y2)
+        - priors:  The tensor of all priors with shape [num_priors, 4],(x,y,w,h)
     Return: A tensor with encoded relative coordinates in the format
             outputted by the network (see decode). Size: [num_priors, 4]
     """
+    #注意传进来的2个参数的坐标格式不一样。
 
+    # False
     if use_yolo_regressors:
         # Exactly the reverse of what we did in decode
         # In fact encode(decode(x, p), p) should be x
@@ -267,13 +271,19 @@ def encode(matched, priors, use_yolo_regressors: bool = False):
     else:
         variances = [0.1, 0.2]
 
+        # gt_box中心点到prior中心点距离，除以prior宽高，除以variance系数
         # dist b/t match center and prior's center
         g_cxcy = (matched[:, :2] + matched[:, 2:]) / 2 - priors[:, :2]
         # encode variance
-        g_cxcy /= (variances[0] * priors[:, 2:])
+        g_cxcy /= (variances[0] * priors[:, 2:]) #(num_priors,2)
+
+        #gt_box宽高除以prior宽高，log后除以variance系数
         # match wh / prior wh
         g_wh = (matched[:, 2:] - matched[:, :2]) / priors[:, 2:]
-        g_wh = torch.log(g_wh) / variances[1]
+        g_wh = torch.log(g_wh) / variances[1] #(num_priors,2)
+
+        #最后拼接，一个是中心点距离除以prior宽高，一个是gt宽高除以prior宽高
+        #所以可以认为是(x',y',w',h')
         # return target for smooth_l1_loss
         loc = torch.cat([g_cxcy, g_wh], 1)  # [num_priors,4]
 

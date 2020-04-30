@@ -80,6 +80,9 @@ class MultiBoxLoss(nn.Module):
         # if self.mask_type == mask_type.lincomb:
         proto_data = predictions['proto']
 
+        self.use_mask_scoring = False
+        self.use_instance_coeff = False
+
         score_data = predictions['score'] if self.use_mask_scoring else None  # False->None
         inst_data = predictions['inst'] if self.use_instance_coeff else None  # False->None
 
@@ -147,7 +150,7 @@ class MultiBoxLoss(nn.Module):
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
 
         losses = {}
-        self.bbox_alpha = 1.5 #默认参数
+        self.bbox_alpha = 1.5  # 默认参数
         # Localization Loss (Smooth L1)
         # 总是train_box
         loc_p = loc_data[pos_idx].view(-1, 4)
@@ -158,7 +161,7 @@ class MultiBoxLoss(nn.Module):
         ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t,
                                      score_data, inst_data, labels)
 
-        #++版本true,1.0版本false
+        # ++版本true,1.0版本false
         self.use_maskiou = False
         if self.use_maskiou:
             loss, maskiou_targets = ret
@@ -174,7 +177,7 @@ class MultiBoxLoss(nn.Module):
         #         losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
 
         # Confidence loss
-        #默认False
+        # 默认False
         self.use_focal_loss = False
         self.use_sigmoid_focal_loss = False  # 默认参数
         self.use_objectness_score = False
@@ -192,7 +195,7 @@ class MultiBoxLoss(nn.Module):
                 losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
 
         # Mask IoU Loss
-        #默认False，++版本True
+        # 默认False，++版本True
         if self.use_maskiou and maskiou_targets is not None:
             losses['I'] = self.mask_iou_loss(net, maskiou_targets)
 
@@ -201,7 +204,7 @@ class MultiBoxLoss(nn.Module):
         # if self.use_class_existence_loss:
         #     losses['E'] = self.class_existence_loss(predictions['classes'], class_existence_t)
 
-        self.use_semantic_segmentation_loss = True #默认参数
+        self.use_semantic_segmentation_loss = True  # 默认参数
         if self.use_semantic_segmentation_loss:
             losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
 
@@ -225,9 +228,9 @@ class MultiBoxLoss(nn.Module):
         return losses
 
     def class_existence_loss(self, class_data, class_existence_t):
-        class_existence_alpha = 1.0 #默认参数
+        class_existence_alpha = 1.0  # 默认参数
         return class_existence_alpha * F.binary_cross_entropy_with_logits(class_data, class_existence_t,
-                                                                              reduction='sum')
+                                                                          reduction='sum')
 
     def semantic_segmentation_loss(self, segment_data, mask_t, class_t, interpolation_mode='bilinear'):
         # Note num_classes here is without the background class so cfg.num_classes-1
@@ -251,14 +254,14 @@ class MultiBoxLoss(nn.Module):
 
             loss_s += F.binary_cross_entropy_with_logits(cur_segment, segment_t, reduction='sum')
 
-        self.semantic_segmentation_alpha=1 #1.0参数
+        self.semantic_segmentation_alpha = 1  # 1.0参数
         return loss_s / mask_h / mask_w * self.semantic_segmentation_alpha
 
     def ohem_conf_loss(self, conf_data, conf_t, pos, num):
         # Compute max conf across batch for hard negative mining
         batch_conf = conf_data.view(-1, self.num_classes)
 
-        self.ohem_use_most_confident = False#默认参数
+        self.ohem_use_most_confident = False  # 默认参数
         if self.ohem_use_most_confident:
             # i.e. max(softmax) along classes > 0
             batch_conf = F.softmax(batch_conf, dim=1)
@@ -288,7 +291,7 @@ class MultiBoxLoss(nn.Module):
         targets_weighted = conf_t[(pos + neg).gt(0)]
         loss_c = F.cross_entropy(conf_p, targets_weighted, reduction='none')
 
-        #默认参数False
+        # 默认参数False
         self.use_class_balanced_conf = False
         if self.use_class_balanced_conf:
             # Lazy initialization
@@ -518,11 +521,14 @@ class MultiBoxLoss(nn.Module):
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
 
-        process_gt_bboxes = cfg.mask_proto_normalize_emulate_roi_pooling or cfg.mask_proto_crop
+        self.mask_proto_normalize_emulate_roi_pooling = True
+        self.mask_proto_crop = True
+        process_gt_bboxes = self.mask_proto_normalize_emulate_roi_pooling or self.mask_proto_crop
 
-        if cfg.mask_proto_remove_empty_masks:
-            # Make sure to store a copy of this because we edit it to get rid of all-zero masks
-            pos = pos.clone()
+        # 默认False
+        # if cfg.mask_proto_remove_empty_masks:
+        #     # Make sure to store a copy of this because we edit it to get rid of all-zero masks
+        #     pos = pos.clone()
 
         loss_m = 0
         loss_d = 0  # Coefficient diversity loss
@@ -537,35 +543,38 @@ class MultiBoxLoss(nn.Module):
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
                 downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()
 
-                if cfg.mask_proto_binarize_downsampled_gt:
+                self.mask_proto_binarize_downsampled_gt = True
+                if self.mask_proto_binarize_downsampled_gt:
                     downsampled_masks = downsampled_masks.gt(0.5).float()
 
-                if cfg.mask_proto_remove_empty_masks:
-                    # Get rid of gt masks that are so small they get downsampled away
-                    very_small_masks = (downsampled_masks.sum(dim=(0, 1)) <= 0.0001)
-                    for i in range(very_small_masks.size(0)):
-                        if very_small_masks[i]:
-                            pos[idx, idx_t[idx] == i] = 0
-
-                if cfg.mask_proto_reweight_mask_loss:
-                    # Ensure that the gt is binary
-                    if not cfg.mask_proto_binarize_downsampled_gt:
-                        bin_gt = downsampled_masks.gt(0.5).float()
-                    else:
-                        bin_gt = downsampled_masks
-
-                    gt_foreground_norm = bin_gt / (torch.sum(bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
-                    gt_background_norm = (1 - bin_gt) / (torch.sum(1 - bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
-
-                    mask_reweighting = gt_foreground_norm * cfg.mask_proto_reweight_coeff + gt_background_norm
-                    mask_reweighting *= mask_h * mask_w
+                # 默认False
+                # if cfg.mask_proto_remove_empty_masks:
+                #     # Get rid of gt masks that are so small they get downsampled away
+                #     very_small_masks = (downsampled_masks.sum(dim=(0, 1)) <= 0.0001)
+                #     for i in range(very_small_masks.size(0)):
+                #         if very_small_masks[i]:
+                #             pos[idx, idx_t[idx] == i] = 0
+                #
+                # if cfg.mask_proto_reweight_mask_loss:
+                #     # Ensure that the gt is binary
+                #     if not cfg.mask_proto_binarize_downsampled_gt:
+                #         bin_gt = downsampled_masks.gt(0.5).float()
+                #     else:
+                #         bin_gt = downsampled_masks
+                #
+                #     gt_foreground_norm = bin_gt / (torch.sum(bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
+                #     gt_background_norm = (1 - bin_gt) / (torch.sum(1 - bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
+                #
+                #     mask_reweighting = gt_foreground_norm * cfg.mask_proto_reweight_coeff + gt_background_norm
+                #     mask_reweighting *= mask_h * mask_w
 
             cur_pos = pos[idx]
             pos_idx_t = idx_t[idx, cur_pos]
 
             if process_gt_bboxes:
                 # Note: this is in point-form
-                if cfg.mask_proto_crop_with_pred_box:
+                self.mask_proto_crop_with_pred_box = False
+                if self.mask_proto_crop_with_pred_box:
                     pos_gt_box_t = decode(loc_data[idx, :, :], priors.data, cfg.use_yolo_regressors)[cur_pos]
                 else:
                     pos_gt_box_t = gt_box_t[idx, cur_pos]
@@ -575,29 +584,34 @@ class MultiBoxLoss(nn.Module):
 
             proto_masks = proto_data[idx]
             proto_coef = mask_data[idx, cur_pos, :]
-            if cfg.use_mask_scoring:
-                mask_scores = score_data[idx, cur_pos, :]
 
-            if cfg.mask_proto_coeff_diversity_loss:
-                if inst_data is not None:
-                    div_coeffs = inst_data[idx, cur_pos, :]
-                else:
-                    div_coeffs = proto_coef
-
-                loss_d += self.coeff_diversity_loss(div_coeffs, pos_idx_t)
+            # 默认False
+            # if cfg.use_mask_scoring:
+            #     mask_scores = score_data[idx, cur_pos, :]
+            #
+            # if cfg.mask_proto_coeff_diversity_loss:
+            #     if inst_data is not None:
+            #         div_coeffs = inst_data[idx, cur_pos, :]
+            #     else:
+            #         div_coeffs = proto_coef
+            #
+            #     loss_d += self.coeff_diversity_loss(div_coeffs, pos_idx_t)
 
             # If we have over the allowed number of masks, select a random sample
             old_num_pos = proto_coef.size(0)
-            if old_num_pos > cfg.masks_to_train:
+            self.masks_to_train = 100  # yolact_base里100,在im700里是300
+            if old_num_pos > self.masks_to_train:
                 perm = torch.randperm(proto_coef.size(0))
-                select = perm[:cfg.masks_to_train]
+                select = perm[:self.masks_to_train]
 
                 proto_coef = proto_coef[select, :]
                 pos_idx_t = pos_idx_t[select]
 
                 if process_gt_bboxes:
                     pos_gt_box_t = pos_gt_box_t[select, :]
-                if cfg.use_mask_scoring:
+
+                # 默认False
+                if self.use_mask_scoring:
                     mask_scores = mask_scores[select, :]
 
             num_pos = proto_coef.size(0)
@@ -605,34 +619,42 @@ class MultiBoxLoss(nn.Module):
             label_t = labels[idx][pos_idx_t]
 
             # Size: [mask_h, mask_w, num_pos]
+            print("m1shape=",proto_masks.shape," m2shape=",proto_coef.t().shape)
             pred_masks = proto_masks @ proto_coef.t()
-            pred_masks = cfg.mask_proto_mask_activation(pred_masks)
+            pred_masks = F.sigmoid(pred_masks)
 
-            if cfg.mask_proto_double_loss:
-                if cfg.mask_proto_mask_activation == activation_func.sigmoid:
-                    pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='sum')
-                else:
-                    pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='sum')
+            # 默认False
+            # if cfg.mask_proto_double_loss:
+            #     if cfg.mask_proto_mask_activation == activation_func.sigmoid:
+            #         pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='sum')
+            #     else:
+            #         pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='sum')
+            #
+            # loss_m += cfg.mask_proto_double_loss_alpha * pre_loss
 
-                loss_m += cfg.mask_proto_double_loss_alpha * pre_loss
-
-            if cfg.mask_proto_crop:
+            # 默认True
+            if self.mask_proto_crop:
                 pred_masks = crop(pred_masks, pos_gt_box_t)
 
-            if cfg.mask_proto_mask_activation == activation_func.sigmoid:
-                pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
-            else:
-                pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='none')
+            # 默认True
+            pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
+            # if cfg.mask_proto_mask_activation == activation_func.sigmoid:
+            #     pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
+            # else:
+            #     pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='none')
 
-            if cfg.mask_proto_normalize_mask_loss_by_sqrt_area:
-                gt_area = torch.sum(mask_t, dim=(0, 1), keepdim=True)
-                pre_loss = pre_loss / (torch.sqrt(gt_area) + 0.0001)
+            # 默认False
+            # if cfg.mask_proto_normalize_mask_loss_by_sqrt_area:
+            #     gt_area = torch.sum(mask_t, dim=(0, 1), keepdim=True)
+            #     pre_loss = pre_loss / (torch.sqrt(gt_area) + 0.0001)
 
-            if cfg.mask_proto_reweight_mask_loss:
-                pre_loss = pre_loss * mask_reweighting[:, :, pos_idx_t]
+            # 默认False
+            # if cfg.mask_proto_reweight_mask_loss:
+            #     pre_loss = pre_loss * mask_reweighting[:, :, pos_idx_t]
 
-            if cfg.mask_proto_normalize_emulate_roi_pooling:
-                weight = mask_h * mask_w if cfg.mask_proto_crop else 1
+            #默认True
+            if self.mask_proto_normalize_emulate_roi_pooling:
+                weight = mask_h * mask_w if self.mask_proto_crop else 1 #True
                 pos_gt_csize = center_size(pos_gt_box_t)
                 gt_box_width = pos_gt_csize[:, 2] * mask_w
                 gt_box_height = pos_gt_csize[:, 3] * mask_h
@@ -644,10 +666,12 @@ class MultiBoxLoss(nn.Module):
 
             loss_m += torch.sum(pre_loss)
 
-            if cfg.use_maskiou:
-                if cfg.discard_mask_area > 0:
+            #默认False，++版本True
+            if self.use_maskiou:
+                self.discard_mask_area = 5*5 #++版本
+                if self.discard_mask_area > 0:
                     gt_mask_area = torch.sum(mask_t, dim=(0, 1))
-                    select = gt_mask_area > cfg.discard_mask_area
+                    select = gt_mask_area > self.discard_mask_area
 
                     if torch.sum(select) < 1:
                         continue
@@ -665,12 +689,15 @@ class MultiBoxLoss(nn.Module):
                 maskiou_t_list.append(maskiou_t)
                 label_t_list.append(label_t)
 
-        losses = {'M': loss_m * cfg.mask_alpha / mask_h / mask_w}
+        self.mask_alpha = 6.125
+        losses = {'M': loss_m * self.mask_alpha / mask_h / mask_w}
 
-        if cfg.mask_proto_coeff_diversity_loss:
-            losses['D'] = loss_d
+        #默认False
+        # if cfg.mask_proto_coeff_diversity_loss:
+        #     losses['D'] = loss_d
 
-        if cfg.use_maskiou:
+        #默认False，++版本True
+        if self.use_maskiou:
             # discard_mask_area discarded every mask in the batch, so nothing to do here
             if len(maskiou_t_list) == 0:
                 return losses, None
@@ -680,9 +707,10 @@ class MultiBoxLoss(nn.Module):
             maskiou_net_input = torch.cat(maskiou_net_input_list)
 
             num_samples = maskiou_t.size(0)
-            if cfg.maskious_to_train > 0 and num_samples > cfg.maskious_to_train:
+            self.maskious_to_train = -1 #默认参数
+            if self.maskious_to_train > 0 and num_samples > self.maskious_to_train:
                 perm = torch.randperm(num_samples)
-                select = perm[:cfg.masks_to_train]
+                select = perm[:self.masks_to_train]
                 maskiou_t = maskiou_t[select]
                 label_t = label_t[select]
                 maskiou_net_input = maskiou_net_input[select]
@@ -691,22 +719,24 @@ class MultiBoxLoss(nn.Module):
 
         return losses
 
-    def _mask_iou(self, mask1, mask2):
-        intersection = torch.sum(mask1 * mask2, dim=(0, 1))
-        area1 = torch.sum(mask1, dim=(0, 1))
-        area2 = torch.sum(mask2, dim=(0, 1))
-        union = (area1 + area2) - intersection
-        ret = intersection / union
-        return ret
 
-    def mask_iou_loss(self, net, maskiou_targets):
-        maskiou_net_input, maskiou_t, label_t = maskiou_targets
+def _mask_iou(self, mask1, mask2):
+    intersection = torch.sum(mask1 * mask2, dim=(0, 1))
+    area1 = torch.sum(mask1, dim=(0, 1))
+    area2 = torch.sum(mask2, dim=(0, 1))
+    union = (area1 + area2) - intersection
+    ret = intersection / union
+    return ret
 
-        maskiou_p = net.maskiou_net(maskiou_net_input)
 
-        label_t = label_t[:, None]
-        maskiou_p = torch.gather(maskiou_p, dim=1, index=label_t).view(-1)
+def mask_iou_loss(self, net, maskiou_targets):
+    maskiou_net_input, maskiou_t, label_t = maskiou_targets
 
-        loss_i = F.smooth_l1_loss(maskiou_p, maskiou_t, reduction='sum')
+    maskiou_p = net.maskiou_net(maskiou_net_input)
 
-        return loss_i * cfg.maskiou_alpha
+    label_t = label_t[:, None]
+    maskiou_p = torch.gather(maskiou_p, dim=1, index=label_t).view(-1)
+
+    loss_i = F.smooth_l1_loss(maskiou_p, maskiou_t, reduction='sum')
+
+    return loss_i * cfg.maskiou_alpha

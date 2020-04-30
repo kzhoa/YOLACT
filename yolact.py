@@ -58,10 +58,16 @@ class FPN(nn.Module):
 
         for idx, c_i in enumerate(reversed(inpt)):
             # 以c5c4c3的顺序处理
-            _, _, h, w = c_i.shape
-            x = F.interpolate(x, size=(h, w), mode=self.interpolation_mode, align_corners=False)
-            x = x + self.lat_layers[idx](c_i)  # 循环中累加的部分不经过pred_layers
 
+
+            print("x_shape=",x.shape)
+            if idx>0:
+                #idx=0时，interpolate不接受dim(1)的输入，所以跳过
+                _, _, h, w = c_i.shape
+                x = F.interpolate(x, size=(h, w), mode=self.interpolation_mode, align_corners=False)
+
+            x = x + self.lat_layers[idx](c_i)  # 循环中累加的部分不经过pred_layers
+            print(idx," x_shape=",x.shape)
             prd = self.pred_layers[idx](x)  # 输出的部分要经过pred_layers
             if self.relu_pred_layers:
                 F.relu(prd, inplace=True)
@@ -324,8 +330,8 @@ class Prediction(nn.Module):
                                 h = scale / ar / conv_h
 
                             # This is for backward compatability with a bug where I made everything square by accident
-                            self.backbone.use_square_anchors = True
-                            if self.backbone.use_square_anchors:
+                            self.use_square_anchors = True
+                            if self.use_square_anchors:
                                 # Default True,只使用正方形anchor
                                 h = w
 

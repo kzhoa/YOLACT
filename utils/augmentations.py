@@ -590,7 +590,7 @@ class BackboneTransform(object):
     def __init__(self,
                  mean,
                  std,
-                 nomalize=True,
+                 normalize=True,
                  subtract_means=False,  # 是否减去均值
                  to_float=False,  # 是否除以255
                  in_channel_order='bgr',
@@ -598,7 +598,7 @@ class BackboneTransform(object):
 
         self.mean = np.array(mean, dtype=np.float32)
         self.std = np.array(std, dtype=np.float32)
-        self.nomalize = nomalize
+        self.normalize = normalize
         self.subtract_means = subtract_means
         self.to_float = to_float
 
@@ -740,7 +740,7 @@ class SSDAugmentation(object):
             BackboneTransform(
                 mean=mean,
                 std=std,
-                nomalize=True,
+                normalize=True,
                 subtract_means=False,  # 是否减去均值
                 to_float=False,  # 是否除以255
                 in_channel_order='BGR',

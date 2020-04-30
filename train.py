@@ -134,6 +134,11 @@ parser.add_argument('--save_folder', default='weights/', help='Directory for sav
 parser.add_argument('--cuda', type=str2bool, default=True, help='Use CUDA to train model') #引用str2bool函数
 parser.add_argument('--validation_epoch', default=2, type=int,
                     help='Output validation information every n iterations. If -1, do no validation.')
+parser.add_argument('--num_workers', default=4, type=int,
+                    help='Number of workers used in dataloading')
+
+parser.add_argument('--batch_alloc', default=None, type=str,#暂时没什么用的参数
+                    help='If using multiple GPUS, you can set this to be a comma separated list detailing which GPUs should get what local batch size (It should add up to your total batch size).')
 
 args = parser.parse_args()
 
@@ -170,9 +175,12 @@ if not os.path.exists(args.save_folder):
 
 # 1.数据
 
-train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
-                        info_file='./data/coco/annotations/instances_train2017.json',
-                        transform=SSDAugmentation(mean=MEANS,std=STD))
+# train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
+#                         info_file='./data/coco/annotations/instances_train2017.json',
+#                         transform=SSDAugmentation(mean=MEANS,std=STD))
+valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
+                              info_file='./data/coco/annotations/instances_val2017.json',
+                              transform=SSDAugmentation(mean=MEANS, std=STD))
 
 # if args.validation_epoch > 0:
 #     setup_eval()
@@ -180,7 +188,7 @@ train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
 #                                   info_file='./data/coco/annotations/instances_val2017.json',
 #                                   transform=SSDAugmentation(mean=MEANS, std=STD))
 
-data_loader = torch.utils.data.DataLoader(train_dataset, args.batch_size,
+data_loader = torch.utils.data.DataLoader(valid_dataset, args.batch_size,
                                     num_workers=args.num_workers,
                                     shuffle=True, collate_fn=detection_collate,
                                     pin_memory=True)

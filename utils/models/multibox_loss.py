@@ -179,7 +179,6 @@ class MultiBoxLoss(nn.Module):
         self.use_sigmoid_focal_loss = False  # 默认参数
         self.use_objectness_score = False
         if self.use_focal_loss:
-
             if self.use_sigmoid_focal_loss:
                 losses['C'] = self.focal_conf_sigmoid_loss(conf_data, conf_t)
             elif self.use_objectness_score:

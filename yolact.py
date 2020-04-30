@@ -467,25 +467,25 @@ class Yolact(nn.Module):
                 module.weight.requires_grad = enable
                 module.bias.requires_grad = enable
 
-    # def save_weights(self, path):
-    #     """ Saves the model's weights using compression because the file sizes were getting too big. """
-    #     torch.save(self.state_dict(), path)
-    #
-    # def load_weights(self, path):
-    #     """ Loads weights from a compressed save file. """
-    #     state_dict = torch.load(path)
-    #
-    #     # For backward compatability, remove these (the new variable is called layers)
-    #     for key in list(state_dict.keys()):
-    #         if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):
-    #             del state_dict[key]
-    #
-    #         # Also for backward compatibility with v1.0 weights, do this check
-    #         if key.startswith('fpn.downsample_layers.'):
-    #             if cfg.fpn is not None and int(key.split('.')[2]) >= cfg.fpn.num_downsample:
-    #                 del state_dict[key]
-    #     self.load_state_dict(state_dict)
-    #
+    def save_weights(self, path):
+        """ Saves the model's weights using compression because the file sizes were getting too big. """
+        torch.save(self.state_dict(), path)
+
+    def load_weights(self, path):
+        """ Loads weights from a compressed save file. """
+        state_dict = torch.load(path)
+
+        # For backward compatability, remove these (the new variable is called layers)
+        for key in list(state_dict.keys()):
+            if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):
+                del state_dict[key]
+
+            # Also for backward compatibility with v1.0 weights, do this check
+            if key.startswith('fpn.downsample_layers.'):
+                if self.fpn is not None and int(key.split('.')[2]) >= self.fpn.num_downsample:
+                    del state_dict[key]
+        self.load_state_dict(state_dict)
+
     # def init_weights(self, backbone_path):
     #     """ Initialize weights for training. """
     #     # Initialize the backbone with the pretrained weights.

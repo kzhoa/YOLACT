@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import time
+
 import torch
 import argparse
 
@@ -6,10 +8,12 @@ import os
 import math, random
 
 from yolact import Yolact
-from data.coco import COCODetection,detection_collate
+from data.coco import COCODetection, detection_collate
 from utils.augmentations import SSDAugmentation
 from utils.models.multibox_loss import MultiBoxLoss
-
+from utils.functions import SavePath
+from utils.logger import Log
+#import eval as eval_script #从eval.py里面拿函数，可是这样的话为什么不把公用函数单独提出来呢???
 
 # ---2个工具类----
 class NetLoss(torch.nn.Module):
@@ -55,6 +59,10 @@ class CustomDataParallel(torch.nn.DataParallel):
 
 
 # --功能函数-------------------
+
+def str2bool(v):
+    return v.lower() in ("yes", "true", "t", "1")
+
 
 def set_lr(optimizer, new_lr):
     for param_group in optimizer.param_groups:
@@ -103,18 +111,29 @@ def prepare_data(datum, devices: list = None, allocation: list = None):
         return split_images, split_targets, split_masks, split_numcrowds
 
 
-# ---参数区域-----------
+def compute_validation_map(epoch, iteration, model, dataset, log: Log = None):
+    with torch.no_grad():
+        model.eval()
+
+        start = time.time()
+        print()
+        print("Computing validation mAP (this may take a while)...", flush=True)
+        val_info = eval_script.evaluate(model, dataset, train_mode=True)
+        end = time.time()
+
+        if log is not None:
+            log.log('val', val_info, elapsed=(end - start), epoch=epoch, iter=iteration)
+
+        model.train()
+
+# --------参数区域-----------
 parser = argparse.ArgumentParser()
 parser.description = "qq_test_1.0"
 parser.add_argument('--batch_size', type=int, default=5, help='Batch size for training')
 parser.add_argument('--save_folder', default='weights/', help='Directory for saving logs.')
-
-
-def str2bool(v):
-    return v.lower() in ("yes", "true", "t", "1")
-
-
-parser.add_argument('--cuda', type=str2bool, default=True, help='Use CUDA to train model')
+parser.add_argument('--cuda', type=str2bool, default=True, help='Use CUDA to train model') #引用str2bool函数
+parser.add_argument('--validation_epoch', default=2, type=int,
+                    help='Output validation information every n iterations. If -1, do no validation.')
 
 args = parser.parse_args()
 
@@ -132,8 +151,9 @@ if torch.cuda.is_available():
 else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
-# ------------------------
+# --显式参数--
 lr = 1e-3
+cur_lr = 1e-3
 decay = 5e-4
 momentum = 0.9
 gamma = 0.1
@@ -149,20 +169,21 @@ if not os.path.exists(args.save_folder):
 # --------------------------
 
 # 1.数据
-valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
-                              info_file='./data/coco/annotations/instances_val2017.json',
-                              transform=SSDAugmentation(mean=MEANS, std=STD))
 
-# train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
-#                         info_file='./data/coco/annotations/instances_train2017.json',
-#                         transform=SSDAugmentation(mean=MEANS,std=STD))
+train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
+                        info_file='./data/coco/annotations/instances_train2017.json',
+                        transform=SSDAugmentation(mean=MEANS,std=STD))
 
+# if args.validation_epoch > 0:
+#     setup_eval()
+#     valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
+#                                   info_file='./data/coco/annotations/instances_val2017.json',
+#                                   transform=SSDAugmentation(mean=MEANS, std=STD))
 
-data_loader = torch.data.DataLoader(valid_dataset, args.batch_size,
-                              num_workers=args.num_workers,
-                              shuffle=True, collate_fn=detection_collate,
-                              pin_memory=True)
-
+data_loader = torch.data.DataLoader(train_dataset, args.batch_size,
+                                    num_workers=args.num_workers,
+                                    shuffle=True, collate_fn=detection_collate,
+                                    pin_memory=True)
 
 # 2.模型
 yolact_model = Yolact()
@@ -180,3 +201,69 @@ criterion = MultiBoxLoss(num_classes=81,
 
 # 包装net，改变net的指向，但不影响yolact_model的指向
 net = CustomDataParallel(NetLoss(net, criterion))
+if args.cuda:
+    net = net.cuda()
+
+num_epochs = 10
+iteration = 0
+save_interval = 10000
+
+step_index = 0
+
+last_time = time.time()
+for epoch in range(num_epochs):
+    # # Resume from start_iter
+    # if (epoch+1)*epoch_size < iteration:
+    #     continue
+    1
+    for datum in data_loader:
+        # Adjust the learning rate at the given iterations, but also if we resume from past that iteration
+        while step_index < len(lr_steps) and iteration >= lr_steps[step_index]:
+            step_index += 1
+            set_lr(optimizer, lr * (gamma ** step_index))
+
+        # Zero the grad to get ready to compute gradients
+        optimizer.zero_grad()
+
+        # Forward Pass + Compute loss at the same time (see CustomDataParallel and NetLoss)
+        losses = net(datum)
+
+        losses = {k: (v).mean() for k, v in losses.items()}  # Mean here because Dataparallel
+        loss = sum([losses[k] for k in losses])
+
+        # Backprop
+        loss.backward()  # Do this to free up vram even if loss is not finite
+        if torch.isfinite(loss).item():
+            optimizer.step()
+
+        cur_time = time.time()
+        elapsed = cur_time - last_time
+        last_time = cur_time
+        iteration += 1
+
+        if iteration % 10 == 0:
+            # eta_str = str(datetime.timedelta(seconds=(cfg.max_iter - iteration) * time_avg.get_avg())).split('.')[0]
+            #
+            # total = sum([loss_avgs[k].get_avg() for k in losses])
+            # loss_labels = sum([[k, loss_avgs[k].get_avg()] for k in loss_types if k in losses], [])
+            #
+            # print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
+            #       % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
+
+            print("[{:.3f}] {:0>7d} || loss:{:.2f}".format(epoch,iteration,loss),flush=True)
+
+        if iteration % save_interval == 0:
+            print('Saving state, iter:', iteration)
+
+            #特意写个Savepath类，感觉作用不大。
+            yolact_model.save_weights(SavePath('yolact_base', epoch, iteration).get_path(root=args.save_folder))
+
+#     # This is done per epoch
+#     if args.validation_epoch > 0:
+#         if epoch % args.validation_epoch == 0 and epoch > 0:
+#             compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
+#
+# # Compute validation mAP after training is finished
+# compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
+
+

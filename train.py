@@ -180,7 +180,7 @@ train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
 #                                   info_file='./data/coco/annotations/instances_val2017.json',
 #                                   transform=SSDAugmentation(mean=MEANS, std=STD))
 
-data_loader = torch.data.DataLoader(train_dataset, args.batch_size,
+data_loader = torch.utils.data.DataLoader(train_dataset, args.batch_size,
                                     num_workers=args.num_workers,
                                     shuffle=True, collate_fn=detection_collate,
                                     pin_memory=True)

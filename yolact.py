@@ -438,6 +438,8 @@ class Yolact(nn.Module):
         # DSSD的prediction里面叫bbox，在yolact里面又改名loc，不知道为什么要改名。
         pred_y = self.prediction(outs)  # 将[P3,P4,P5,P6,P7]作为输入
 
+        #从multiboxloss类中推测，pred层输出的格式为(x1,y1,x2,y2)
+
         pred_outs = {'loc': pred_y['bbox'],
                      'conf': pred_y['conf'],
                      'mask': pred_y['mask'],

@@ -166,8 +166,8 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
     Args:
         pos_thresh: (float) IoU > pos_thresh ==> positive.
         neg_thresh: (float) IoU < neg_thresh ==> negative.
-        truths: (tensor) Ground truth boxes, Shape: [num_obj, num_priors]. #这里应该写错了，truths_shape=[num_obj,4],需要(x,y,w,h)
-        priors: (tensor) Prior boxes from priorbox layers, Shape: [n_priors,4].
+        truths: (tensor) Ground truth boxes, Shape: [num_obj, num_priors]. #这里应该写错了，truths_shape=[num_obj,4],(x1,y1,x2,y2)
+        priors: (tensor) Prior boxes from priorbox layers, Shape: [n_priors,4]. #(x,y,w,h)
         labels: (tensor) All the class labels for the image, Shape: [num_obj].
         crowd_boxes: (tensor) All the crowd box annotations or None if there are none.
         loc_t: (tensor) Tensor to be filled w/ endcoded location targets.
@@ -179,6 +179,7 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
         The matched indices corresponding to 1)location and 2)confidence preds.
     """
     #match函数是对一张图片使用的。
+    #在简化后的版本里，loc_data并没有被用到
 
     # 默认 False，直接简化
     # 传入为*x,y,w,h),point_form效果是变成(x1,y1,x2,y2)
@@ -220,14 +221,17 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
 
     #为每个prior找到自己的gtbox
     matches = truths[best_truth_idx]  # Shape: [num_priors,4],注意是num_priors个gt_box坐标。
-    conf = labels[best_truth_idx] + 1  # Shape: [num_priors]
+    conf = labels[best_truth_idx] + 1  # Shape: [num_priors],为每个prior找到自己的label
     # 为什么+1 为什么+1 为什么+1 为什么+1 为什么+1??????????????
 
+    #小于正阈值，视为中性及以下，进一步的，小于负阈值，视为背景类。
+    #比起ssd里只用一个threshold，yolact作者采用了正负2个threshold。
     conf[best_truth_overlap < pos_thresh] = -1  # label as neutral
     conf[best_truth_overlap < neg_thresh] = 0  # label as background
 
     # Deal with crowd annotations for COCO
-    crowd_iou_threshold = 0.7  # Default in yolact1.0,与crowdbox的IOU大于阈值则视为中性。
+    crowd_iou_threshold = 0.7  # Default in yolact1.0
+    #为每个prior找到最大的crowdbox,与crowdbox的IOU大于阈值则至少视为中性。
     if crowd_boxes is not None and crowd_iou_threshold < 1:
         # Size [num_priors, num_crowds]
         crowd_overlaps = jaccard(decoded_priors, crowd_boxes, iscrowd=True)
@@ -262,7 +266,7 @@ def encode(matched, priors, use_yolo_regressors: bool = False):
     if use_yolo_regressors:
         # Exactly the reverse of what we did in decode
         # In fact encode(decode(x, p), p) should be x
-        boxes = center_size(matched)
+        boxes = center_size(matched) #由(x1,y1,x2,y2)变(x,y,w,h)
 
         loc = torch.cat((
             boxes[:, :2] - priors[:, :2],

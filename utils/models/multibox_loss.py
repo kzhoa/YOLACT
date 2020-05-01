@@ -71,10 +71,10 @@ class MultiBoxLoss(nn.Module):
             * Only if mask_type == lincomb
         """
 
-        loc_data = predictions['loc']  # (bz, 5*num_prior*h*w, 4)
-        conf_data = predictions['conf']  # (bz, 5*num_prior*h*w, num_classes)
-        mask_data = predictions['mask']  # (bz, 5*num_prior*h*w, 32)
-        priors = predictions['priors']  # (5*num_prior*h*w, 4)
+        loc_data = predictions['loc']  # (bz, numpriors, 4)
+        conf_data = predictions['conf']  # (bz, numpriors, num_classes)
+        mask_data = predictions['mask']  # (bz, numpriors, 32)
+        priors = predictions['priors']  # (numpriors, 4) ，（x,y,w,h）
 
         # 默认就是lincomb,linearcombination
         # if self.mask_type == mask_type.lincomb:
@@ -107,7 +107,7 @@ class MultiBoxLoss(nn.Module):
         for idx in range(batch_size):
             # 牢记idx指batch_idx
             # [:-1]表示从开始到倒数第2个，最后一个不取，即(x,y,w,h)
-            truths = targets[idx][:, :-1].detach()  # num_objs*[x,y,w,h]
+            truths = targets[idx][:, :-1].detach()  # num_objs*[x1,y1,x2,y2]
             labels[idx] = targets[idx][:, -1].detach().long()  # num_objs*[class_label]
 
             # # False
@@ -124,8 +124,8 @@ class MultiBoxLoss(nn.Module):
                 crowd_boxes, truths = split(truths)
 
                 # We don't use the crowd labels or masks
-                _, labels[idx] = split(labels[idx])  # [num_objs-cur_crowds,5]
-                _, masks[idx] = split(masks[idx])  # [num_objs-cur_crowds,5]
+                _, labels[idx] = split(labels[idx])  # [num_objs-cur_crowds]
+                _, masks[idx] = split(masks[idx])  # [num_objs-cur_crowds]
 
             else:
                 crowd_boxes = None
@@ -136,32 +136,36 @@ class MultiBoxLoss(nn.Module):
                   truths, priors.data, labels[idx], crowd_boxes,
                   loc_t, conf_t, idx_t, idx, loc_data[idx])
 
-            gt_box_t[idx, :, :] = truths[idx_t[idx]]
+            gt_box_t[idx, :, :] = truths[idx_t[idx]]#这不就是match函数的中间结果matches吗？(x1,y1,x2,y2)
 
         # wrap targets
         loc_t = Variable(loc_t, requires_grad=False)
         conf_t = Variable(conf_t, requires_grad=False)
         idx_t = Variable(idx_t, requires_grad=False)
 
-        pos = conf_t > 0
-        num_pos = pos.sum(dim=1, keepdim=True)
+        pos = conf_t > 0 #(bz,numpriors),大于0这个条件同时过滤-1中性与0背景。
+        num_pos = pos.sum(dim=1, keepdim=True) #(bz,1)
 
         # Shape: [batch,num_priors,4]
+        #unsqueeze在最后一个位置上扩充维度1，变成(bz,num_priors,1),然后expand到4
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
 
         losses = {}
         self.bbox_alpha = 1.5  # 默认参数
-        # Localization Loss (Smooth L1)
-        # 总是train_box
-        loc_p = loc_data[pos_idx].view(-1, 4)
-        loc_t = loc_t[pos_idx].view(-1, 4)
+        # 默认cfg.train_box总为True
+        # 1. Localization Loss (Smooth L1)
+        loc_p = loc_data[pos_idx].view(-1, 4) #推测格式为(x1,y1,x2,y2)
+        loc_t = loc_t[pos_idx].view(-1, 4) #(x1,y1,x2,y2)
         losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * self.bbox_alpha
 
-        # 总数train_mask, type为lincomb
-        ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t,
-                                     score_data, inst_data, labels)
+        # 总是train_mask, type为lincomb
+        #2.mask_loss
+        ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data,
+                                     masks, gt_box_t,#gt_masks与gt_box_t
+                                     score_data, inst_data, #默认2个None
+                                     labels)
 
-        # ++版本true,1.0版本false
+        # 默认False，++版本True
         self.use_maskiou = False
         if self.use_maskiou:
             loss, maskiou_targets = ret
@@ -169,14 +173,7 @@ class MultiBoxLoss(nn.Module):
             loss = ret
         losses.update(loss)
 
-        # #默认None
-        # if cfg.mask_proto_loss is not None:
-        #     if cfg.mask_proto_loss == 'l1':
-        #         losses['P'] = torch.mean(torch.abs(proto_data)) / self.l1_expected_area * self.l1_alpha
-        #     elif cfg.mask_proto_loss == 'disj':
-        #         losses['P'] = -torch.mean(torch.max(F.log_softmax(proto_data, dim=-1), dim=-1)[0])
-
-        # Confidence loss
+        # 3.Confidence loss
         # 默认False
         self.use_focal_loss = False
         self.use_sigmoid_focal_loss = False  # 默认参数
@@ -192,6 +189,7 @@ class MultiBoxLoss(nn.Module):
             if self.use_objectness_score:
                 losses['C'] = self.conf_objectness_loss(conf_data, conf_t, batch_size, loc_p, loc_t, priors)
             else:
+                #默认来到这里
                 losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
 
         # Mask IoU Loss
@@ -493,31 +491,10 @@ class MultiBoxLoss(nn.Module):
 
         return loss_m
 
-    def coeff_diversity_loss(self, coeffs, instance_t):
-        """
-        coeffs     should be size [num_pos, num_coeffs]
-        instance_t should be size [num_pos] and be values from 0 to num_instances-1
-        """
-        num_pos = coeffs.size(0)
-        instance_t = instance_t.view(-1)  # juuuust to make sure
-
-        coeffs_norm = F.normalize(coeffs, dim=1)
-        cos_sim = coeffs_norm @ coeffs_norm.t()
-
-        inst_eq = (instance_t[:, None].expand_as(cos_sim) == instance_t[None, :].expand_as(cos_sim)).float()
-
-        # Rescale to be between 0 and 1
-        cos_sim = (cos_sim + 1) / 2
-
-        # If they're the same instance, use cosine distance, else use cosine similarity
-        loss = (1 - cos_sim) * inst_eq + cos_sim * (1 - inst_eq)
-
-        # Only divide by num_pos once because we're summing over a num_pos x num_pos tensor
-        # and all the losses will be divided by num_pos at the end, so just one extra time.
-        return cfg.mask_proto_coeff_diversity_alpha * loss.sum() / num_pos
-
-    def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data, masks, gt_box_t, score_data,
+    def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data,
+                          masks, gt_box_t, score_data,
                           inst_data, labels, interpolation_mode='bilinear'):
+        """简化版本"""
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
 
@@ -525,13 +502,7 @@ class MultiBoxLoss(nn.Module):
         self.mask_proto_crop = True
         process_gt_bboxes = self.mask_proto_normalize_emulate_roi_pooling or self.mask_proto_crop
 
-        # 默认False
-        # if cfg.mask_proto_remove_empty_masks:
-        #     # Make sure to store a copy of this because we edit it to get rid of all-zero masks
-        #     pos = pos.clone()
-
         loss_m = 0
-        loss_d = 0  # Coefficient diversity loss
 
         maskiou_t_list = []
         maskiou_net_input_list = []
@@ -546,27 +517,6 @@ class MultiBoxLoss(nn.Module):
                 self.mask_proto_binarize_downsampled_gt = True
                 if self.mask_proto_binarize_downsampled_gt:
                     downsampled_masks = downsampled_masks.gt(0.5).float()
-
-                # 默认False
-                # if cfg.mask_proto_remove_empty_masks:
-                #     # Get rid of gt masks that are so small they get downsampled away
-                #     very_small_masks = (downsampled_masks.sum(dim=(0, 1)) <= 0.0001)
-                #     for i in range(very_small_masks.size(0)):
-                #         if very_small_masks[i]:
-                #             pos[idx, idx_t[idx] == i] = 0
-                #
-                # if cfg.mask_proto_reweight_mask_loss:
-                #     # Ensure that the gt is binary
-                #     if not cfg.mask_proto_binarize_downsampled_gt:
-                #         bin_gt = downsampled_masks.gt(0.5).float()
-                #     else:
-                #         bin_gt = downsampled_masks
-                #
-                #     gt_foreground_norm = bin_gt / (torch.sum(bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
-                #     gt_background_norm = (1 - bin_gt) / (torch.sum(1 - bin_gt, dim=(0, 1), keepdim=True) + 0.0001)
-                #
-                #     mask_reweighting = gt_foreground_norm * cfg.mask_proto_reweight_coeff + gt_background_norm
-                #     mask_reweighting *= mask_h * mask_w
 
             cur_pos = pos[idx]
             pos_idx_t = idx_t[idx, cur_pos]
@@ -584,18 +534,6 @@ class MultiBoxLoss(nn.Module):
 
             proto_masks = proto_data[idx]
             proto_coef = mask_data[idx, cur_pos, :]
-
-            # 默认False
-            # if cfg.use_mask_scoring:
-            #     mask_scores = score_data[idx, cur_pos, :]
-            #
-            # if cfg.mask_proto_coeff_diversity_loss:
-            #     if inst_data is not None:
-            #         div_coeffs = inst_data[idx, cur_pos, :]
-            #     else:
-            #         div_coeffs = proto_coef
-            #
-            #     loss_d += self.coeff_diversity_loss(div_coeffs, pos_idx_t)
 
             # If we have over the allowed number of masks, select a random sample
             old_num_pos = proto_coef.size(0)
@@ -623,34 +561,13 @@ class MultiBoxLoss(nn.Module):
             pred_masks = proto_masks @ proto_coef.t()
             pred_masks = F.sigmoid(pred_masks)
 
-            # 默认False
-            # if cfg.mask_proto_double_loss:
-            #     if cfg.mask_proto_mask_activation == activation_func.sigmoid:
-            #         pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='sum')
-            #     else:
-            #         pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='sum')
-            #
-            # loss_m += cfg.mask_proto_double_loss_alpha * pre_loss
-
             # 默认True
             if self.mask_proto_crop:
                 pred_masks = crop(pred_masks, pos_gt_box_t)
 
             # 默认True
             pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
-            # if cfg.mask_proto_mask_activation == activation_func.sigmoid:
-            #     pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
-            # else:
-            #     pre_loss = F.smooth_l1_loss(pred_masks, mask_t, reduction='none')
 
-            # 默认False
-            # if cfg.mask_proto_normalize_mask_loss_by_sqrt_area:
-            #     gt_area = torch.sum(mask_t, dim=(0, 1), keepdim=True)
-            #     pre_loss = pre_loss / (torch.sqrt(gt_area) + 0.0001)
-
-            # 默认False
-            # if cfg.mask_proto_reweight_mask_loss:
-            #     pre_loss = pre_loss * mask_reweighting[:, :, pos_idx_t]
 
             #默认True
             if self.mask_proto_normalize_emulate_roi_pooling:
@@ -691,10 +608,6 @@ class MultiBoxLoss(nn.Module):
 
         self.mask_alpha = 6.125
         losses = {'M': loss_m * self.mask_alpha / mask_h / mask_w}
-
-        #默认False
-        # if cfg.mask_proto_coeff_diversity_loss:
-        #     losses['D'] = loss_d
 
         #默认False，++版本True
         if self.use_maskiou:

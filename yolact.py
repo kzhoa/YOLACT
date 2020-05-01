@@ -120,6 +120,7 @@ class ProtoNet(nn.Module):
 
     def forward(self, x):
         x = self.layers(x)  # (bz, 32,70,70)
+        # Move the features last so the multiplication is easy
         x = x.permute(0, 2, 3, 1).contiguous()  # (bz,70,70,32)
         return x
 
@@ -426,13 +427,10 @@ class Yolact(nn.Module):
 
         # 不使用grid,grid相关部分删去
 
-        proto_out = self.proto_net(proto_x)  # (bz, 32,70,70)
+        proto_out = self.proto_net(proto_x)  # (bz,maskh,maskw,32) ,permute操作集成在proto模块内了
         # 根据1.0参数，虽然protonet里面最后一层不接relu，但是在forward里面又用了relu
         # 直接集成到protonet里面去不好吗，为什么这样折腾自己。
         proto_out = F.relu(proto_out)
-
-        # Move the features last so the multiplication is easy
-        proto_out = proto_out.permute(0, 2, 3, 1).contiguous()  # (bz,70,70,32)
 
         # 4.prediction，输出需要转一次名字，
         # DSSD的prediction里面叫bbox，在yolact里面又改名loc，不知道为什么要改名。

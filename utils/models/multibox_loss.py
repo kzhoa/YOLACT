@@ -151,7 +151,8 @@ class MultiBoxLoss(nn.Module):
         #2.mask_loss
         ret = self.lincomb_mask_loss(pos, idx_t,
                                      loc_data,#注意这里是pred出来的loc_data,不是表征gt坐标的loc_t
-                                     mask_data, priors, proto_data,
+                                     mask_data, priors,
+                                     proto_data,
                                      masks,
                                      gt_box_t,#match函数的中间结果matches,[bz,numprior,x1y1x2y2]
                                      score_data, inst_data, #默认2个None
@@ -516,8 +517,8 @@ class MultiBoxLoss(nn.Module):
                 if self.mask_proto_binarize_downsampled_gt:
                     downsampled_masks = downsampled_masks.gt(0.5).float() #利用torch.greaterthan()函数二值化gt_mask
 
-            cur_pos = pos[idx] # pos = conf_t > 0,pos代表每个bz下类别标签不为中性or背景的那些prior的bool型索引,即正样本prior的索引
-            pos_idx_t = idx_t[idx, cur_pos] #idx_t表示每个bz下，每个prior对应的gt_box的索引值。
+            cur_pos = pos[idx] # pos = conf_t > 0,[num_priors],pos代表每个bz下类别标签不为中性or背景的那些prior的bool型索引,即正样本prior的索引
+            pos_idx_t = idx_t[idx, cur_pos] #idx_t表示每个bz下，每个prior对应的obj的索引值。
             # pos_idx_t表示本batch中正样本prior对应的gtbox的索引(对应哪个obj),(num_pos,1)
 
             #True
@@ -557,8 +558,8 @@ class MultiBoxLoss(nn.Module):
 
             #更新正样本数量
             num_pos = proto_coef.size(0)
-            mask_t = downsampled_masks[:, :, pos_idx_t] #(maskh,maskw,num_objs)
-            label_t = labels[idx][pos_idx_t]
+            mask_t = downsampled_masks[:, :, pos_idx_t] #(maskh,maskw,num_objs)->(maskh,maskw,num_pos)
+            label_t = labels[idx][pos_idx_t] #(bz,numobj) -> (num_pos)
 
             # Size: [mask_h, mask_w, num_pos]
             print("m1shape=",proto_masks.shape," m2shape=",proto_coef.t().shape)

@@ -447,7 +447,7 @@ class Yolact(nn.Module):
 
         # 将proto_out加入到输出中，shape=(bz,70,70,32)
         if proto_out is not None:
-            pred_outs['proto'] = proto_out
+            pred_outs['proto'] = proto_out # (bz,70,70,32)
 
         if self.training:
             # Default True

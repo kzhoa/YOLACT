@@ -78,7 +78,7 @@ class MultiBoxLoss(nn.Module):
 
         # 默认就是lincomb,linearcombination
         # if self.mask_type == mask_type.lincomb:
-        proto_data = predictions['proto']
+        proto_data = predictions['proto']  #(bz,maskh,maskw,maskdim)
 
         self.use_mask_scoring = False
         self.use_instance_coeff = False
@@ -100,22 +100,11 @@ class MultiBoxLoss(nn.Module):
         conf_t = loc_data.new(batch_size, num_priors).long()
         idx_t = loc_data.new(batch_size, num_priors).long()
 
-        # # False
-        # if cfg.use_class_existence_loss:
-        #     class_existence_t = loc_data.new(batch_size, self.num_classes - 1)
-
         for idx in range(batch_size):
             # 牢记idx指batch_idx
             # [:-1]表示从开始到倒数第2个，最后一个不取，即(x,y,w,h)
             truths = targets[idx][:, :-1].detach()  # num_objs*[x1,y1,x2,y2]
             labels[idx] = targets[idx][:, -1].detach().long()  # num_objs*[class_label]
-
-            # # False
-            # if cfg.use_class_existence_loss:
-            #     # Construct a one-hot vector for each object and collapse it into an existence vector with max
-            #     # Also it's fine to include the crowd annotations here
-            #     class_existence_t[idx, :] = \
-            #     torch.eye(self.num_classes - 1, device=conf_t.get_device())[labels[idx]].max(dim=0)[0]
 
             # Split the crowd annotations because they come bundled in
             cur_crowds = num_crowds[idx]
@@ -160,10 +149,14 @@ class MultiBoxLoss(nn.Module):
 
         # 总是train_mask, type为lincomb
         #2.mask_loss
-        ret = self.lincomb_mask_loss(pos, idx_t, loc_data, mask_data, priors, proto_data,
-                                     masks, gt_box_t,#gt_masks与gt_box_t
+        ret = self.lincomb_mask_loss(pos, idx_t,
+                                     loc_data,#注意这里是pred出来的loc_data,不是表征gt坐标的loc_t
+                                     mask_data, priors, proto_data,
+                                     masks,
+                                     gt_box_t,#match函数的中间结果matches,[bz,numprior,x1y1x2y2]
                                      score_data, inst_data, #默认2个None
-                                     labels)
+                                     labels #(bz,numobj)
+                                     )
 
         # 默认False，++版本True
         self.use_maskiou = False
@@ -491,60 +484,70 @@ class MultiBoxLoss(nn.Module):
 
         return loss_m
 
-    def lincomb_mask_loss(self, pos, idx_t, loc_data, mask_data, priors, proto_data,
-                          masks, gt_box_t, score_data,
-                          inst_data, labels, interpolation_mode='bilinear'):
+    def lincomb_mask_loss(self, pos, idx_t,
+                          loc_data, #注意这里是pred出来的loc_data,(格式推测x1y1x2y2)
+                          mask_data, #pred出来的mask，对应(bz,numpriors,maskdim=32)
+                          priors,#(numpriors,xywh)
+                          proto_data,#(bz,70,70,32)
+                          masks,#list<tensor>,[batch_size][num_objs,im_height,im_width]
+                          gt_box_t,#match函数的中间结果matches,[bz,numprior,x1y1x2y2]
+                          score_data,inst_data,#默认2个None
+                          labels, #(bz,numobj)
+                          interpolation_mode='bilinear'):
         """简化版本"""
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
 
-        self.mask_proto_normalize_emulate_roi_pooling = True
-        self.mask_proto_crop = True
-        process_gt_bboxes = self.mask_proto_normalize_emulate_roi_pooling or self.mask_proto_crop
+        self.mask_proto_normalize_emulate_roi_pooling = True #Normalize the mask loss to emulate roi pooling's affect on loss.
+        self.mask_proto_crop = True #If True, crop the mask with the predicted bbox during training.
+        process_gt_bboxes = self.mask_proto_normalize_emulate_roi_pooling or self.mask_proto_crop #True
 
         loss_m = 0
 
-        maskiou_t_list = []
-        maskiou_net_input_list = []
-        label_t_list = []
-
         for idx in range(mask_data.size(0)):
             with torch.no_grad():
-                downsampled_masks = F.interpolate(masks[idx].unsqueeze(0), (mask_h, mask_w),
+                #此处unsqueeze是为了方便调用interpolate函数，对末2位进行修改。
+                downsampled_masks = F.interpolate(masks[idx].unsqueeze(0),#[1,num_objs,im_height,im_width]
+                                                  (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
-                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()
+                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()#(maskh,maskw,num_objs)
 
-                self.mask_proto_binarize_downsampled_gt = True
+                self.mask_proto_binarize_downsampled_gt = True #Binarize GT after dowsnampling during training?
                 if self.mask_proto_binarize_downsampled_gt:
-                    downsampled_masks = downsampled_masks.gt(0.5).float()
+                    downsampled_masks = downsampled_masks.gt(0.5).float() #利用torch.greaterthan()函数二值化gt_mask
 
-            cur_pos = pos[idx]
-            pos_idx_t = idx_t[idx, cur_pos]
+            cur_pos = pos[idx] # pos = conf_t > 0,pos代表每个bz下类别标签不为中性or背景的那些prior的bool型索引,即正样本prior的索引
+            pos_idx_t = idx_t[idx, cur_pos] #idx_t表示每个bz下，每个prior对应的gt_box的索引值。
+            # pos_idx_t表示本batch中正样本prior对应的gtbox的索引(对应哪个obj),(num_pos,1)
 
+            #True
             if process_gt_bboxes:
                 # Note: this is in point-form
                 self.mask_proto_crop_with_pred_box = False
                 if self.mask_proto_crop_with_pred_box:
-                    pos_gt_box_t = decode(loc_data[idx, :, :], priors.data, cfg.use_yolo_regressors)[cur_pos]
+                    pos_gt_box_t = decode(loc_data[idx, :, :], priors.data, use_yolo_regressors=False)[cur_pos]
                 else:
+                    #pos_gtbox_t 表示本batch中正样本对应的gtbox的坐标，(num_pos,x1y1x2y2)
                     pos_gt_box_t = gt_box_t[idx, cur_pos]
 
+            #若本batch下没有正样本，则跳过本batch
             if pos_idx_t.size(0) == 0:
                 continue
 
-            proto_masks = proto_data[idx]
-            proto_coef = mask_data[idx, cur_pos, :]
+            proto_masks = proto_data[idx] #(maskh,maskw,32)
+            proto_coef = mask_data[idx, cur_pos, :]#(num_pos,32)
 
             # If we have over the allowed number of masks, select a random sample
             old_num_pos = proto_coef.size(0)
             self.masks_to_train = 100  # yolact_base里100,在im700里是300
             if old_num_pos > self.masks_to_train:
-                perm = torch.randperm(proto_coef.size(0))
-                select = perm[:self.masks_to_train]
+                perm = torch.randperm(proto_coef.size(0)) #将[0,size(0)-1]范围内的整数随机打乱排列
+                select = perm[:self.masks_to_train]#这两句组合在一起，就是随机选择masks_to_train数量的正样本(指prior)
 
                 proto_coef = proto_coef[select, :]
                 pos_idx_t = pos_idx_t[select]
 
+                #True
                 if process_gt_bboxes:
                     pos_gt_box_t = pos_gt_box_t[select, :]
 
@@ -552,8 +555,9 @@ class MultiBoxLoss(nn.Module):
                 if self.use_mask_scoring:
                     mask_scores = mask_scores[select, :]
 
+            #更新正样本数量
             num_pos = proto_coef.size(0)
-            mask_t = downsampled_masks[:, :, pos_idx_t]
+            mask_t = downsampled_masks[:, :, pos_idx_t] #(maskh,maskw,num_objs)
             label_t = labels[idx][pos_idx_t]
 
             # Size: [mask_h, mask_w, num_pos]
@@ -579,56 +583,56 @@ class MultiBoxLoss(nn.Module):
 
             # If the number of masks were limited scale the loss accordingly
             if old_num_pos > num_pos:
-                pre_loss *= old_num_pos / num_pos
+                pre_loss *= old_num_pos / num_pos #放大梯度
 
             loss_m += torch.sum(pre_loss)
 
-            #默认False，++版本True
-            if self.use_maskiou:
-                self.discard_mask_area = 5*5 #++版本
-                if self.discard_mask_area > 0:
-                    gt_mask_area = torch.sum(mask_t, dim=(0, 1))
-                    select = gt_mask_area > self.discard_mask_area
-
-                    if torch.sum(select) < 1:
-                        continue
-
-                    pos_gt_box_t = pos_gt_box_t[select, :]
-                    pred_masks = pred_masks[:, :, select]
-                    mask_t = mask_t[:, :, select]
-                    label_t = label_t[select]
-
-                maskiou_net_input = pred_masks.permute(2, 0, 1).contiguous().unsqueeze(1)
-                pred_masks = pred_masks.gt(0.5).float()
-                maskiou_t = self._mask_iou(pred_masks, mask_t)
-
-                maskiou_net_input_list.append(maskiou_net_input)
-                maskiou_t_list.append(maskiou_t)
-                label_t_list.append(label_t)
+            # #默认False，++版本True
+            # if self.use_maskiou:
+            #     self.discard_mask_area = 5*5 #++版本
+            #     if self.discard_mask_area > 0:
+            #         gt_mask_area = torch.sum(mask_t, dim=(0, 1))
+            #         select = gt_mask_area > self.discard_mask_area
+            #
+            #         if torch.sum(select) < 1:
+            #             continue
+            #
+            #         pos_gt_box_t = pos_gt_box_t[select, :]
+            #         pred_masks = pred_masks[:, :, select]
+            #         mask_t = mask_t[:, :, select]
+            #         label_t = label_t[select]
+            #
+            #     maskiou_net_input = pred_masks.permute(2, 0, 1).contiguous().unsqueeze(1)
+            #     pred_masks = pred_masks.gt(0.5).float()
+            #     maskiou_t = self._mask_iou(pred_masks, mask_t)
+            #
+            #     maskiou_net_input_list.append(maskiou_net_input)
+            #     maskiou_t_list.append(maskiou_t)
+            #     label_t_list.append(label_t)
 
         self.mask_alpha = 6.125
         losses = {'M': loss_m * self.mask_alpha / mask_h / mask_w}
 
-        #默认False，++版本True
-        if self.use_maskiou:
-            # discard_mask_area discarded every mask in the batch, so nothing to do here
-            if len(maskiou_t_list) == 0:
-                return losses, None
-
-            maskiou_t = torch.cat(maskiou_t_list)
-            label_t = torch.cat(label_t_list)
-            maskiou_net_input = torch.cat(maskiou_net_input_list)
-
-            num_samples = maskiou_t.size(0)
-            self.maskious_to_train = -1 #默认参数
-            if self.maskious_to_train > 0 and num_samples > self.maskious_to_train:
-                perm = torch.randperm(num_samples)
-                select = perm[:self.masks_to_train]
-                maskiou_t = maskiou_t[select]
-                label_t = label_t[select]
-                maskiou_net_input = maskiou_net_input[select]
-
-            return losses, [maskiou_net_input, maskiou_t, label_t]
+        # #默认False，++版本True
+        # if self.use_maskiou:
+        #     # discard_mask_area discarded every mask in the batch, so nothing to do here
+        #     if len(maskiou_t_list) == 0:
+        #         return losses, None
+        #
+        #     maskiou_t = torch.cat(maskiou_t_list)
+        #     label_t = torch.cat(label_t_list)
+        #     maskiou_net_input = torch.cat(maskiou_net_input_list)
+        #
+        #     num_samples = maskiou_t.size(0)
+        #     self.maskious_to_train = -1 #默认参数
+        #     if self.maskious_to_train > 0 and num_samples > self.maskious_to_train:
+        #         perm = torch.randperm(num_samples)
+        #         select = perm[:self.masks_to_train]
+        #         maskiou_t = maskiou_t[select]
+        #         label_t = label_t[select]
+        #         maskiou_net_input = maskiou_net_input[select]
+        #
+        #     return losses, [maskiou_net_input, maskiou_t, label_t]
 
         return losses
 

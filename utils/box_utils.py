@@ -182,7 +182,7 @@ def match(pos_thresh, neg_thresh, truths, priors, labels, crowd_boxes, loc_t, co
     #在简化后的版本里，loc_data并没有被用到
 
     # 默认 False，直接简化
-    # 传入为*x,y,w,h),point_form效果是变成(x1,y1,x2,y2)
+    # 传入为(x,y,w,h),point_form效果是变成(x1,y1,x2,y2)
     decoded_priors = point_form(priors)  # (num_priors,4)
     # cfg设置默认False,会调用jaccard，直接简化
     overlaps = jaccard(truths, decoded_priors)  # Size [num_objects, num_priors]
@@ -346,10 +346,11 @@ def log_sum_exp(x):
     This will be used to determine unaveraged confidence loss across
     all examples in a batch.
     Args:
-        x (Variable(tensor)): conf_preds from conf layers
+        x (Variable(tensor)): conf_preds from conf layers,shape=[bz*numpriors,num_classes]
     """
     x_max = x.data.max()
-    return torch.log(torch.sum(torch.exp(x - x_max), 1)) + x_max
+    #把同batch同prior的所有类别得分减去x_max后exp再sum加总,最后取log,加x_max。
+    return torch.log(torch.sum(torch.exp(x - x_max), dim=1)) + x_max
 
 
 def sanitize_coordinates(_x1, _x2, img_size: int, padding: int = 0, cast: bool = True):

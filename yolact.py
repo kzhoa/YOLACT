@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.models.resnet import Bottleneck
-from backbone import ResNetBackboneGN
+from backbone import ResNetBackbone
 
 import itertools
 from typing import List
@@ -59,15 +59,14 @@ class FPN(nn.Module):
         for idx, c_i in enumerate(reversed(inpt)):
             # 以c5c4c3的顺序处理
 
-
-            print("x_shape=",x.shape)
+            #print("x_shape=",x.shape)
             if idx>0:
                 #idx=0时，interpolate不接受dim(1)的输入，所以跳过
                 _, _, h, w = c_i.shape
                 x = F.interpolate(x, size=(h, w), mode=self.interpolation_mode, align_corners=False)
 
             x = x + self.lat_layers[idx](c_i)  # 循环中累加的部分不经过pred_layers
-            print(idx," x_shape=",x.shape)
+            #print(idx," x_shape=",x.shape)
             prd = self.pred_layers[idx](x)  # 输出的部分要经过pred_layers
             if self.relu_pred_layers:
                 F.relu(prd, inplace=True)
@@ -372,7 +371,8 @@ class Yolact(nn.Module):
 
         # 5个主要结构
         # 1.backbone
-        self.backbone = ResNetBackboneGN([3, 4, 23, 3])
+        self.backbone = ResNetBackbone([3,4,23,3])
+        self.backbone.init_backbone('./weights/resnet101_reducedfc.pth')
 
         # 2.fpn
         src_channels = self.backbone.channels  # [64*4,128*4,256*4,512*4]
@@ -443,9 +443,9 @@ class Yolact(nn.Module):
                      'mask': pred_y['mask'],
                      'priors':pred_y['priors']}
 
-        # 将proto_out加入到输出中，shape=(bz,70,70,32)
+        # 将proto_out加入到输出中
         if proto_out is not None:
-            pred_outs['proto'] = proto_out # (bz,70,70,32)
+            pred_outs['proto'] = proto_out # (bz,mask_h,mask_w,32)
 
         if self.training:
             # Default True

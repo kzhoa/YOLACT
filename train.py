@@ -13,7 +13,9 @@ from utils.augmentations import SSDAugmentation
 from utils.models.multibox_loss import MultiBoxLoss
 from utils.functions import SavePath
 from utils.logger import Log
-#import eval as eval_script #从eval.py里面拿函数，可是这样的话为什么不把公用函数单独提出来呢???
+
+
+# import eval as eval_script #从eval.py里面拿函数，可是这样的话为什么不把公用函数单独提出来呢???
 
 # ---2个工具类----
 class NetLoss(torch.nn.Module):
@@ -83,18 +85,32 @@ def prepare_data(datum, devices: list = None, allocation: list = None):
         if devices is None:
             devices = ['cuda:0'] if args.cuda else ['cpu']
         if allocation is None:
-            allocation = [args.batch_size // len(devices)] * (len(devices) - 1)
+            allocation = [args.batch_size // len(devices)] * (len(devices) - 1)  # 最差情况下*0返回空列表[]
             allocation.append(args.batch_size - sum(allocation))  # The rest might need more/less
 
         images, (targets, masks, num_crowds) = datum
 
+        # 下面这个过程本来有个bug,
+        # 在"for _ in range(alloc):"这句，原作者默认了dataset是可以被batchsize整除的。
+        # 不然的话，最后一个incomplete_batch里，可能会出现cur_idx越界的情况。
+        # 例如batchsize设为5，只有1个device,最后一个batch只有3张图，但是"+=1"会循环5次，于是cur_idx=3的时候报越界错误。
+        # 解决方案是，(1)在dataloader里，设置drop_last=True。
+        # (2)在下面这个过程里，判断是否越界。
+        # 根据低耦合原则，不要让函数外面的使用者过分关心这种细节，我选择方案(2)。
         cur_idx = 0
+        num_imgs = len(images)
         for device, alloc in zip(devices, allocation):
             for _ in range(alloc):
                 images[cur_idx] = gradinator(images[cur_idx].to(device))
                 targets[cur_idx] = gradinator(targets[cur_idx].to(device))
                 masks[cur_idx] = gradinator(masks[cur_idx].to(device))
                 cur_idx += 1
+                # 因为有2层循环，需要break2次
+                if cur_idx >= num_imgs:
+                    break
+
+            if cur_idx >= num_imgs:
+                break
 
         cur_idx = 0
         split_images, split_targets, split_masks, split_numcrowds \
@@ -126,18 +142,21 @@ def compute_validation_map(epoch, iteration, model, dataset, log: Log = None):
 
         model.train()
 
+
 # --------参数区域-----------
 parser = argparse.ArgumentParser()
 parser.description = "qq_test_1.0"
-parser.add_argument('--batch_size', type=int, default=5, help='Batch size for training')
+parser.add_argument('--batch_size', type=int, default=3, help='Batch size for training')
 parser.add_argument('--save_folder', default='weights/', help='Directory for saving logs.')
-parser.add_argument('--cuda', type=str2bool, default=True, help='Use CUDA to train model') #引用str2bool函数
+parser.add_argument('--cuda', type=str2bool, default=True, help='Use CUDA to train model')  # 引用str2bool函数
 parser.add_argument('--validation_epoch', default=2, type=int,
                     help='Output validation information every n iterations. If -1, do no validation.')
 parser.add_argument('--num_workers', default=4, type=int,
                     help='Number of workers used in dataloading')
+parser.add_argument('--resume', default=None, type=str,
+                    help='Number of workers used in dataloading')
 
-parser.add_argument('--batch_alloc', default=None, type=str,#暂时没什么用的参数
+parser.add_argument('--batch_alloc', default=None, type=str,  # 暂时没什么用的参数
                     help='If using multiple GPUS, you can set this to be a comma separated list detailing which GPUs should get what local batch size (It should add up to your total batch size).')
 
 args = parser.parse_args()
@@ -175,12 +194,13 @@ if not os.path.exists(args.save_folder):
 
 # 1.数据
 
-# train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
-#                         info_file='./data/coco/annotations/instances_train2017.json',
-#                         transform=SSDAugmentation(mean=MEANS,std=STD))
-valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
-                              info_file='./data/coco/annotations/instances_val2017.json',
+train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
+                              info_file='./data/coco/annotations/instances_train2017.json',
                               transform=SSDAugmentation(mean=MEANS, std=STD))
+
+# valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
+#                               info_file='./data/coco/annotations/instances_val2017.json',
+#                               transform=SSDAugmentation(mean=MEANS, std=STD))
 
 # if args.validation_epoch > 0:
 #     setup_eval()
@@ -188,14 +208,19 @@ valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
 #                                   info_file='./data/coco/annotations/instances_val2017.json',
 #                                   transform=SSDAugmentation(mean=MEANS, std=STD))
 
-data_loader = torch.utils.data.DataLoader(valid_dataset, args.batch_size,
-                                    num_workers=args.num_workers,
-                                    shuffle=True, collate_fn=detection_collate,
-                                    pin_memory=True)
+data_loader = torch.utils.data.DataLoader(train_dataset, args.batch_size,
+                                          num_workers=args.num_workers,
+                                          shuffle=True,
+                                          collate_fn=detection_collate,
+                                          pin_memory=True,
+                                          drop_last=True)
 
 # 2.模型
 yolact_model = Yolact()
 net = yolact_model  # 这步的作用是给model加一个别名net,后续net会被包装。
+
+if args.resume is not None:
+    yolact_model.load_weights(args.resume)
 
 # 3.优化器
 optimizer = torch.optim.SGD(net.parameters(), lr=lr, momentum=momentum,
@@ -214,21 +239,25 @@ if args.cuda:
 
 num_epochs = 10
 iteration = 0
-save_interval = 10000
+save_interval = 1000
 
 step_index = 0
 
 last_time = time.time()
+
+# 写死学习率
+set_lr(optimizer, 1e-4)
+
 for epoch in range(num_epochs):
     # # Resume from start_iter
     # if (epoch+1)*epoch_size < iteration:
     #     continue
-    1
     for datum in data_loader:
         # Adjust the learning rate at the given iterations, but also if we resume from past that iteration
-        while step_index < len(lr_steps) and iteration >= lr_steps[step_index]:
-            step_index += 1
-            set_lr(optimizer, lr * (gamma ** step_index))
+
+        # while step_index < len(lr_steps) and iteration >= lr_steps[step_index]:
+        #     step_index += 1
+        #     set_lr(optimizer, lr * (gamma ** step_index))
 
         # Zero the grad to get ready to compute gradients
         optimizer.zero_grad()
@@ -239,6 +268,8 @@ for epoch in range(num_epochs):
         losses = {k: (v).mean() for k, v in losses.items()}  # Mean here because Dataparallel
         loss = sum([losses[k] for k in losses])
 
+        # 梯度裁剪
+        torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=1.0)
         # Backprop
         loss.backward()  # Do this to free up vram even if loss is not finite
         if torch.isfinite(loss).item():
@@ -258,12 +289,14 @@ for epoch in range(num_epochs):
             # print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
             #       % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
 
-            print("[{:.3f}] {:0>7d} || loss:{:.2f}".format(epoch,iteration,loss),flush=True)
+            print("[{:d}] {:0>7d} || loss:{:.2f}".format(epoch, iteration, loss), flush=True)
+            for k in losses:
+                print(k, " {:.4f}".format(losses[k]))
 
         if iteration % save_interval == 0:
             print('Saving state, iter:', iteration)
 
-            #特意写个Savepath类，感觉作用不大。
+            # 特意写个Savepath类，感觉作用不大。
             yolact_model.save_weights(SavePath('yolact_base', epoch, iteration).get_path(root=args.save_folder))
 
 #     # This is done per epoch
@@ -273,5 +306,3 @@ for epoch in range(num_epochs):
 #
 # # Compute validation mAP after training is finished
 # compute_validation_map(epoch, iteration, yolact_net, val_dataset, log if args.log else None)
-
-

@@ -78,7 +78,7 @@ class MultiBoxLoss(nn.Module):
 
         # 默认就是lincomb,linearcombination
         # if self.mask_type == mask_type.lincomb:
-        proto_data = predictions['proto']  #(bz,maskh,maskw,maskdim)
+        proto_data = predictions['proto']  # (bz,maskh,maskw,maskdim)
 
         self.use_mask_scoring = False
         self.use_instance_coeff = False
@@ -125,38 +125,38 @@ class MultiBoxLoss(nn.Module):
                   truths, priors.data, labels[idx], crowd_boxes,
                   loc_t, conf_t, idx_t, idx, loc_data[idx])
 
-            gt_box_t[idx, :, :] = truths[idx_t[idx]]#这不就是match函数的中间结果matches吗？(x1,y1,x2,y2)
+            gt_box_t[idx, :, :] = truths[idx_t[idx]]  # 这不就是match函数的中间结果matches吗？(x1,y1,x2,y2)
 
         # wrap targets
         loc_t = Variable(loc_t, requires_grad=False)
         conf_t = Variable(conf_t, requires_grad=False)
         idx_t = Variable(idx_t, requires_grad=False)
 
-        pos = conf_t > 0 #(bz,numpriors),大于0这个条件同时过滤-1中性与0背景。
-        num_pos = pos.sum(dim=1, keepdim=True) #(bz,1)
+        pos = conf_t > 0  # (bz,numpriors),大于0这个条件同时过滤-1中性与0背景。
+        num_pos = pos.sum(dim=1, keepdim=True)  # (bz,1)
 
         # Shape: [batch,num_priors,4]
-        #unsqueeze在最后一个位置上扩充维度1，变成(bz,num_priors,1),然后expand到4
+        # unsqueeze在最后一个位置上扩充维度1，变成(bz,num_priors,1),然后expand到4
         pos_idx = pos.unsqueeze(pos.dim()).expand_as(loc_data)
 
         losses = {}
         self.bbox_alpha = 1.5  # 默认参数
         # 默认cfg.train_box总为True
         # 1. Localization Loss (Smooth L1)
-        loc_p = loc_data[pos_idx].view(-1, 4) #推测格式为(x1,y1,x2,y2)
-        loc_t = loc_t[pos_idx].view(-1, 4) #(x1,y1,x2,y2)
+        loc_p = loc_data[pos_idx].view(-1, 4)  # 推测格式为(x1,y1,x2,y2)
+        loc_t = loc_t[pos_idx].view(-1, 4)  # (x1,y1,x2,y2)
         losses['B'] = F.smooth_l1_loss(loc_p, loc_t, reduction='sum') * self.bbox_alpha
 
         # 总是train_mask, type为lincomb
-        #2.mask_loss
+        # 2.mask_loss
         ret = self.lincomb_mask_loss(pos, idx_t,
-                                     loc_data,#注意这里是pred出来的loc_data,不是表征gt坐标的loc_t
+                                     loc_data,  # 注意这里是pred出来的loc_data,不是表征gt坐标的loc_t
                                      mask_data, priors,
                                      proto_data,
-                                     masks,
-                                     gt_box_t,#match函数的中间结果matches,[bz,numprior,x1y1x2y2]
-                                     score_data, inst_data, #默认2个None
-                                     labels #(bz,numobj)
+                                     masks,  # 这是标注给的mask ,[bz][numobj,imh,imw]
+                                     gt_box_t,  # match函数的中间结果matches,[bz,numprior,x1y1x2y2]
+                                     score_data, inst_data,  # 默认2个None
+                                     labels  # (bz,numobj)
                                      )
 
         # 默认False，++版本True
@@ -165,7 +165,7 @@ class MultiBoxLoss(nn.Module):
             loss, maskiou_targets = ret
         else:
             loss = ret
-        losses.update(loss)
+        losses.update(loss)  # 返回的loss是一个字典，用原生字典的update方法更新到主字典losses中。
 
         # 3.Confidence loss
         # 默认False
@@ -183,8 +183,12 @@ class MultiBoxLoss(nn.Module):
             if self.use_objectness_score:
                 losses['C'] = self.conf_objectness_loss(conf_data, conf_t, batch_size, loc_p, loc_t, priors)
             else:
-                #默认来到这里
-                losses['C'] = self.ohem_conf_loss(conf_data, conf_t, pos, batch_size)
+                # 默认来到这里
+                # 总结一下，ohem_loss，就是取真实label为0（背景)的priors的num_classes个输出结果，与真实label做CE。
+                losses['C'] = self.ohem_conf_loss(conf_data,  # (bz, numpriors, num_classes) 预测出的每个prior的结果
+                                                  conf_t,  # [bz, numpriors]标注的每个prior的label
+                                                  pos,
+                                                  batch_size)
 
         # Mask IoU Loss
         # 默认False，++版本True
@@ -198,7 +202,10 @@ class MultiBoxLoss(nn.Module):
 
         self.use_semantic_segmentation_loss = True  # 默认参数
         if self.use_semantic_segmentation_loss:
-            losses['S'] = self.semantic_segmentation_loss(predictions['segm'], masks, labels)
+            losses['S'] = self.semantic_segmentation_loss(predictions['segm'],
+                                                          masks,  # 这是标注给的mask ,[bz][numobj,imh,imw]
+                                                          labels,  # (bz,numobj)
+                                                          )
 
         # Divide all losses by the number of positives.
         # Don't do it for loss[P] because that doesn't depend on the anchors.
@@ -249,39 +256,58 @@ class MultiBoxLoss(nn.Module):
         self.semantic_segmentation_alpha = 1  # 1.0参数
         return loss_s / mask_h / mask_w * self.semantic_segmentation_alpha
 
-    def ohem_conf_loss(self, conf_data, conf_t, pos, num):
+    def ohem_conf_loss(self,
+                       conf_data,  # (bz,numpriors,num_classes)
+                       conf_t, pos,
+                       num  # forward里传进来的num就是batchsize，不知道怎么吐槽这个变量命名习惯。我怕他自己以后没注释都看不懂。
+                       ):
         # Compute max conf across batch for hard negative mining
-        batch_conf = conf_data.view(-1, self.num_classes)
+        batch_conf = conf_data.view(-1, self.num_classes)  # (bz*numpriors,num_classes)，代表每个类别的预测分
 
         self.ohem_use_most_confident = False  # 默认参数
         if self.ohem_use_most_confident:
             # i.e. max(softmax) along classes > 0
             batch_conf = F.softmax(batch_conf, dim=1)
-            loss_c, _ = batch_conf[:, 1:].max(dim=1)
+            loss_c, _ = batch_conf[:, 1:].max(dim=1)  # 第0类是背景，所以拿掉了。
         else:
             # i.e. -softmax(class 0 confidence)
-            loss_c = log_sum_exp(batch_conf) - batch_conf[:, 0]
+            # 上面是同batch每个prior取最大的类别得分，下面这个是每个prior对每个类别得分做类似softmax的操作后加总所有类别。
+            loss_c = log_sum_exp(batch_conf) - batch_conf[:,
+                                               0]  # 这个处理比较神奇，以(x_max-背景类conf)为基石，其他类按得分接近x_max的程度获得(0,log2]范围的bonus。
 
+        # 这个算法有点神奇。
+        # 我们任选一个真实标签为0的prior,因为默认参数是走log_sum_exp的。
+        # 对于这个prior而言，模型生成的conf=[1,0,0,0,...,0]和[0,1,0,0,...,0]，在log_sum_exp函数中获得的结果是完全一样的。
+        # 区别仅仅在于，出来之后，减去batch_conf[:,0] ,会让前者的loss更小一点。
+        # 值得注意的是，此处的loss_c仅仅为一个临时的定性loss，而非定量loss，
+        # 之后会被覆盖掉，不用于求导，所以不必追求精确，只要能表达位次关系就好。
+
+        # loss_c.shape=[bz*numpriors]
         # Hard Negative Mining
-        loss_c = loss_c.view(num, -1)
-        loss_c[pos] = 0  # filter out pos boxes
-        loss_c[conf_t < 0] = 0  # filter out neutrals (conf_t = -1)
-        _, loss_idx = loss_c.sort(1, descending=True)
-        _, idx_rank = loss_idx.sort(1)
-        num_pos = pos.long().sum(1, keepdim=True)
-        num_neg = torch.clamp(self.negpos_ratio * num_pos, max=pos.size(1) - 1)
-        neg = idx_rank < num_neg.expand_as(idx_rank)
+        loss_c = loss_c.view(num, -1)  # (bz,num_priors)
+        loss_c[pos] = 0  # 将真实标签不为背景的prior，loss置0。pos=conf_t>0，所以参数只需要一个conf_t,根本没必要传个pos进来啊。
+        loss_c[conf_t < 0] = 0  # 将真实标签为中性（-1）的prior，loss置为0。
+        # 经过上面这两步，只剩下对应gt的label为背景的那些prior有loss。
+        # 所以...所谓的困难样本处理，就是处理真实标签为0的样本？？？这就是困难样本:ma:
+        _, loss_idx = loss_c.sort(1, descending=True)  # 利用torch.sort,返回loss最大的prior的序号，(bz,num_priors)
+        _, idx_rank = loss_idx.sort(1)  # 二次升序sort的效果是，知道第idx个框在原来batch中的排名，(bz,num_priors)
+        num_pos = pos.long().sum(1, keepdim=True)  # (bz,1),每个batch内有几个正框
+        num_neg = torch.clamp(self.negpos_ratio * num_pos,
+                              max=pos.size(1) - 1)  # (bz,1),根据正框数量，扩张一个比例，默认3.0，注意每个bz的num_neg不一样
+        neg = idx_rank < num_neg.expand_as(idx_rank)  # (bz,num_priors),bool型索引，选中loss_c数值最大的前num_neg个框为1。
 
         # Just in case there aren't enough negatives, don't start using positives as negatives
-        neg[pos] = 0
-        neg[conf_t < 0] = 0  # Filter out neutrals
+        neg[pos] = 0  # 如果前num_neg个框中有pos框，置为0
+        neg[conf_t < 0] = 0  # 同样地，中性neural框也置为0
 
         # Confidence Loss Including Positive and Negative Examples
-        pos_idx = pos.unsqueeze(2).expand_as(conf_data)
-        neg_idx = neg.unsqueeze(2).expand_as(conf_data)
-        conf_p = conf_data[(pos_idx + neg_idx).gt(0)].view(-1, self.num_classes)
-        targets_weighted = conf_t[(pos + neg).gt(0)]
-        loss_c = F.cross_entropy(conf_p, targets_weighted, reduction='none')
+        pos_idx = pos.unsqueeze(2).expand_as(conf_data)  # (bz,numpriors,num_classes)
+        neg_idx = neg.unsqueeze(2).expand_as(conf_data)  # (bz,numpriors,num_classes)
+        conf_p = conf_data[(pos_idx + neg_idx).gt(0)].view(-1, self.num_classes)  # (num_pos+num_neg,num_classes)
+        targets_weighted = conf_t[(pos + neg).gt(0)]  # [bz,num_priors] -> (num_pos+num_neg),每个框的真实label
+        # 因为正负框都没有包含label为-1的prior, 所以选中的target中也不会包含-1，下一步计算CE不会有问题。
+        # CE之前不需要softmax
+        loss_c = F.cross_entropy(conf_p, targets_weighted, reduction='none')  # (num_pos+num_neg),
 
         # 默认参数False
         self.use_class_balanced_conf = False
@@ -305,9 +331,12 @@ class MultiBoxLoss(nn.Module):
 
             loss_c = (loss_c * weighting).sum() / avg_weight
         else:
+            # 默认直接加总
             loss_c = loss_c.sum()
 
         self.conf_alpha = 1.0
+
+        # 总结一下，ohem_loss，就是取真实label为0（背景)的priors的num_classes个输出结果，与真实label做CE。
         return self.conf_alpha * loss_c
 
     def focal_conf_loss(self, conf_data, conf_t):
@@ -486,69 +515,70 @@ class MultiBoxLoss(nn.Module):
         return loss_m
 
     def lincomb_mask_loss(self, pos, idx_t,
-                          loc_data, #注意这里是pred出来的loc_data,(格式推测x1y1x2y2)
-                          mask_data, #pred出来的mask，对应(bz,numpriors,maskdim=32)
-                          priors,#(numpriors,xywh)
-                          proto_data,#(bz,70,70,32)
-                          masks,#list<tensor>,[batch_size][num_objs,im_height,im_width]
-                          gt_box_t,#match函数的中间结果matches,[bz,numprior,x1y1x2y2]
-                          score_data,inst_data,#默认2个None
-                          labels, #(bz,numobj)
+                          loc_data,  # 注意这里是pred出来的loc_data,(格式推测x1y1x2y2)
+                          mask_data,  # pred出来的mask，对应(bz,numpriors,maskdim=32)
+                          priors,  # (numpriors,xywh)
+                          proto_data,  # (bz,70,70,32)
+                          masks,  # list<tensor>,[batch_size][num_objs,im_height,im_width]
+                          gt_box_t,  # match函数的中间结果matches,[bz,numprior,x1y1x2y2]
+                          score_data, inst_data,  # 默认2个None
+                          labels,  # (bz,numobj)
                           interpolation_mode='bilinear'):
         """简化版本"""
         mask_h = proto_data.size(1)
         mask_w = proto_data.size(2)
 
-        self.mask_proto_normalize_emulate_roi_pooling = True #Normalize the mask loss to emulate roi pooling's affect on loss.
-        self.mask_proto_crop = True #If True, crop the mask with the predicted bbox during training.
-        process_gt_bboxes = self.mask_proto_normalize_emulate_roi_pooling or self.mask_proto_crop #True
+        self.mask_proto_normalize_emulate_roi_pooling = True  # Normalize the mask loss to emulate roi pooling's affect on loss.
+        self.mask_proto_crop = True  # If True, crop the mask with the predicted bbox during training.
+        process_gt_bboxes = self.mask_proto_normalize_emulate_roi_pooling or self.mask_proto_crop  # True
 
         loss_m = 0
 
+        # 遍历batch
         for idx in range(mask_data.size(0)):
             with torch.no_grad():
-                #此处unsqueeze是为了方便调用interpolate函数，对末2位进行修改。
-                downsampled_masks = F.interpolate(masks[idx].unsqueeze(0),#[1,num_objs,im_height,im_width]
+                # 此处unsqueeze是为了方便调用interpolate函数，对末2位进行修改。
+                downsampled_masks = F.interpolate(masks[idx].unsqueeze(0),  # [1,num_objs,im_height,im_width]
                                                   (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
-                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()#(maskh,maskw,num_objs)
+                downsampled_masks = downsampled_masks.permute(1, 2, 0).contiguous()  # (maskh,maskw,num_objs)
 
-                self.mask_proto_binarize_downsampled_gt = True #Binarize GT after dowsnampling during training?
+                self.mask_proto_binarize_downsampled_gt = True  # Binarize GT after dowsnampling during training?
                 if self.mask_proto_binarize_downsampled_gt:
-                    downsampled_masks = downsampled_masks.gt(0.5).float() #利用torch.greaterthan()函数二值化gt_mask
+                    downsampled_masks = downsampled_masks.gt(0.5).float()  # 利用torch.greaterthan()函数二值化gt_mask
 
-            cur_pos = pos[idx] # pos = conf_t > 0,[num_priors],pos代表每个bz下类别标签不为中性or背景的那些prior的bool型索引,即正样本prior的索引
-            pos_idx_t = idx_t[idx, cur_pos] #idx_t表示每个bz下，每个prior对应的obj的索引值。
+            cur_pos = pos[idx]  # pos = conf_t > 0,[num_priors],pos代表每个bz下类别标签不为中性or背景的那些prior的bool型索引,即正样本prior的索引
+            pos_idx_t = idx_t[idx, cur_pos]  # idx_t表示每个bz下，每个prior对应的obj的索引值。
             # pos_idx_t表示本batch中正样本prior对应的gtbox的索引(对应哪个obj),(num_pos,1)
 
-            #True
+            # True
             if process_gt_bboxes:
                 # Note: this is in point-form
                 self.mask_proto_crop_with_pred_box = False
                 if self.mask_proto_crop_with_pred_box:
                     pos_gt_box_t = decode(loc_data[idx, :, :], priors.data, use_yolo_regressors=False)[cur_pos]
                 else:
-                    #pos_gtbox_t 表示本batch中正样本对应的gtbox的坐标，(num_pos,x1y1x2y2)
+                    # pos_gtbox_t 表示本batch中正样本对应的gtbox的坐标，(num_pos,x1y1x2y2)
                     pos_gt_box_t = gt_box_t[idx, cur_pos]
 
-            #若本batch下没有正样本，则跳过本batch
+            # 若本batch下没有正样本，则跳过本batch
             if pos_idx_t.size(0) == 0:
                 continue
 
-            proto_masks = proto_data[idx] #(maskh,maskw,32)
-            proto_coef = mask_data[idx, cur_pos, :]#(num_pos,32)
+            proto_masks = proto_data[idx]  # (maskh,maskw,32)
+            proto_coef = mask_data[idx, cur_pos, :]  # (num_pos,32)
 
             # If we have over the allowed number of masks, select a random sample
             old_num_pos = proto_coef.size(0)
             self.masks_to_train = 100  # yolact_base里100,在im700里是300
             if old_num_pos > self.masks_to_train:
-                perm = torch.randperm(proto_coef.size(0)) #将[0,size(0)-1]范围内的整数随机打乱排列
-                select = perm[:self.masks_to_train]#这两句组合在一起，就是随机选择masks_to_train数量的正样本(指prior)
+                perm = torch.randperm(proto_coef.size(0))  # 将[0,size(0)-1]范围内的整数随机打乱排列
+                select = perm[:self.masks_to_train]  # 这两句组合在一起，就是随机选择masks_to_train数量的正样本(指prior)
 
                 proto_coef = proto_coef[select, :]
                 pos_idx_t = pos_idx_t[select]
 
-                #True
+                # True
                 if process_gt_bboxes:
                     pos_gt_box_t = pos_gt_box_t[select, :]
 
@@ -556,37 +586,47 @@ class MultiBoxLoss(nn.Module):
                 if self.use_mask_scoring:
                     mask_scores = mask_scores[select, :]
 
-            #更新正样本数量
+            # 更新正样本数量
             num_pos = proto_coef.size(0)
-            mask_t = downsampled_masks[:, :, pos_idx_t] #(maskh,maskw,num_objs)->(maskh,maskw,num_pos)
-            label_t = labels[idx][pos_idx_t] #(bz,numobj) -> (num_pos)
+            mask_t = downsampled_masks[:, :, pos_idx_t]  # (maskh,maskw,num_objs)->(maskh,maskw,num_pos)
+            label_t = labels[idx][pos_idx_t]  # (bz,numobj) -> (num_pos)
 
-            # Size: [mask_h, mask_w, num_pos]
-            print("m1shape=",proto_masks.shape," m2shape=",proto_coef.t().shape)
+            # [mask_h,mask_w,mask_dim]*[mask_dim,num_pos] = [mask_h, mask_w, num_pos]
+            # 艾特@符号表示矩阵乘法
             pred_masks = proto_masks @ proto_coef.t()
             pred_masks = F.sigmoid(pred_masks)
 
             # 默认True
             if self.mask_proto_crop:
+                # 在pred_masks上，将所有pos_gtbox之外的点都置为0
                 pred_masks = crop(pred_masks, pos_gt_box_t)
 
-            # 默认True
+            # 默认True,计算mask交叉熵
+            # 理论上已经sigmoid过了，这个clamp没有意义。
+            # pred_masks,[mask_h, mask_w, num_pos]
+            # mask_t,[maskh,maskw,num_pos]
+            # 因为reduction='none',结果保留形状[maskh,maskw,num_pos]
             pre_loss = F.binary_cross_entropy(torch.clamp(pred_masks, 0, 1), mask_t, reduction='none')
 
-
-            #默认True
+            # 默认True
             if self.mask_proto_normalize_emulate_roi_pooling:
-                weight = mask_h * mask_w if self.mask_proto_crop else 1 #True
-                pos_gt_csize = center_size(pos_gt_box_t)
-                gt_box_width = pos_gt_csize[:, 2] * mask_w
-                gt_box_height = pos_gt_csize[:, 3] * mask_h
+                weight = mask_h * mask_w if self.mask_proto_crop else 1  # True,个人感觉这里为False的时候设为1会让梯度有点略显微小。
+                pos_gt_csize = center_size(pos_gt_box_t)  # 变成(cx, cy, w, h)格式,shape=[num_pos,4]
+                gt_box_width = pos_gt_csize[:, 2] * mask_w  # [num_pos]
+                gt_box_height = pos_gt_csize[:, 3] * mask_h  # [num_pos]
+                # 经过sum变成[num_pos],然后除以相应的gt_w与gt_h
                 pre_loss = pre_loss.sum(dim=(0, 1)) / gt_box_width / gt_box_height * weight
+                # 上面这种写法也冗余啊。按下面这样写不是2行搞定吗。
+                # pre_loss = pre_loss.sum(dim=(0,1))/pos_gt_csize[:, 2]/pos_gt_csize[:, 3]
+                # pre_loss = pre_loss/mask_h/mask_w if self.mask_proto_crop else pre_loss
 
+            # 目前为止，pre_loss.shape=[num_pos]
             # If the number of masks were limited scale the loss accordingly
             if old_num_pos > num_pos:
-                pre_loss *= old_num_pos / num_pos #放大梯度
+                pre_loss *= old_num_pos / num_pos  # 放大梯度
 
-            loss_m += torch.sum(pre_loss)
+            # 当前img的loss加到整个batch的累计量中
+            loss_m += torch.sum(pre_loss)  # 现在又变成标量了
 
             # #默认False，++版本True
             # if self.use_maskiou:
@@ -611,8 +651,8 @@ class MultiBoxLoss(nn.Module):
             #     maskiou_t_list.append(maskiou_t)
             #     label_t_list.append(label_t)
 
-        self.mask_alpha = 6.125
-        losses = {'M': loss_m * self.mask_alpha / mask_h / mask_w}
+        self.mask_alpha = 6.125  # 神奇的经验参数？
+        losses = {'M': loss_m * self.mask_alpha / mask_h / mask_w}  # 为什么又要除以mask_h和mask_w啊，在gt_box_width那一步不是除过了。
 
         # #默认False，++版本True
         # if self.use_maskiou:

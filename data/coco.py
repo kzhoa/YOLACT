@@ -126,6 +126,8 @@ class COCODetection(data.Dataset):
                    target is the object returned by ``coco.loadAnns``.
             Note that if no crowd annotations exist, crowd will be None
         """
+        #注意，这里返回的label类别是从0开始编号的
+
         img_id = self.ids[index]
 
         if self.has_gt:
@@ -172,6 +174,7 @@ class COCODetection(data.Dataset):
 
         if self.target_transform is not None and len(target) > 0:
             target = self.target_transform(target, width, height)
+            #之后就是[numobj,5]
 
         if self.transform is not None:
             if len(target) > 0:

@@ -165,6 +165,7 @@ class ResNetBackboneGN(ResNetBackbone):
         """ The path here comes from detectron. So we load it differently. """
         with open(path, 'rb') as f:
             state_dict = pickle.load(f, encoding='latin1')  # From the detectron source
+            print(state_dict)
             state_dict = state_dict['blobs']
 
         our_state_dict_keys = list(self.state_dict().keys())

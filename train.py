@@ -146,7 +146,7 @@ def compute_validation_map(epoch, iteration, model, dataset, log: Log = None):
 # --------参数区域-----------
 parser = argparse.ArgumentParser()
 parser.description = "qq_test_1.0"
-parser.add_argument('--batch_size', type=int, default=3, help='Batch size for training')
+parser.add_argument('--batch_size', type=int, default=4, help='Batch size for training')
 parser.add_argument('--save_folder', default='weights/',type=str, help='Directory for saving logs.')
 parser.add_argument('--cuda', type=str2bool, default=True, help='Use CUDA to train model')  # 引用str2bool函数
 parser.add_argument('--validation_epoch', default=2, type=int,

@@ -481,15 +481,20 @@ class Yolact(nn.Module):
         """ Loads weights from a compressed save file. """
         state_dict = torch.load(path)
 
-        # For backward compatability, remove these (the new variable is called layers)
-        for key in list(state_dict.keys()):
-            if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):
-                del state_dict[key]
+        #我不知道原作者干嘛不让还原backbone的参数。反正我要还原。
+        #backward compatability不知道是什么，我觉得可能是作者经常更换backbone，所以backbone的参数单独指定权重文件?
+        #看fpn那段，我觉得是他自己的fpn写法有问题。我改写了fpn之后应该存储上没有差错，可以放心读取。
 
-            # Also for backward compatibility with v1.0 weights, do this check
-            if key.startswith('fpn.downsample_layers.'):
-                if self.fpn is not None and int(key.split('.')[2]) >= self.fpn.num_downsample:
-                    del state_dict[key]
+        # # For backward compatability, remove these (the new variable is called layers)
+        # for key in list(state_dict.keys()):
+        #     if key.startswith('backbone.layer') and not key.startswith('backbone.layers'):
+        #         del state_dict[key]
+        #
+        #     # Also for backward compatibility with v1.0 weights, do this check
+        #     if key.startswith('fpn.downsample_layers.'):
+        #         if self.fpn is not None and int(key.split('.')[2]) >= self.fpn.num_downsample:
+        #             del state_dict[key]
+        #
         self.load_state_dict(state_dict)
 
     # def init_weights(self, backbone_path):

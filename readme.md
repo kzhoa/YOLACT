@@ -1,15 +1,15 @@
-#YOLACT
+# YOLACT
 
 An  adapted and simplified version of original YOLACT (https://github.com/dbolya/yolact/).
 
-##Prepare
+## Prepare
 
 Original Yolact authors use pretrained weights of 'resnet-101',which can be download from 'resnet101_reducedfc.pth'(),
 
 The file 'resnet101_reducedfc.pth' should be put under './weights/' directory.
 
 
-##Train
+## Train
 
 to train a new model with default save folder './weights/'
 ```bash

@@ -4,9 +4,9 @@ An  adapted and simplified version of original YOLACT (https://github.com/dbolya
 
 ## Prepare
 
-Original Yolact authors use pretrained weights of 'resnet-101',which can be download from 'resnet101_reducedfc.pth'(),
+Original Yolact authors use pretrained weights of backbone 'resnet-101',which can be download from ['resnet101_reducedfc.pth'](https://drive.google.com/file/d/1vaDqYNB__jTB7_p9G6QTMvoMDlGkHzhP/view),
 
-The file 'resnet101_reducedfc.pth' should be put under './weights/' directory.
+The file `'resnet101_reducedfc.pth'` should be put under `'./weights/'` directory.
 
 
 ## Train

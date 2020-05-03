@@ -13,7 +13,7 @@ from utils.augmentations import SSDAugmentation
 from utils.models.multibox_loss import MultiBoxLoss
 from utils.functions import SavePath
 from utils.logger import Log
-
+from utils import timetools
 
 # import eval as eval_script #从eval.py里面拿函数，可是这样的话为什么不把公用函数单独提出来呢???
 
@@ -246,7 +246,11 @@ step_index = 0
 last_time = time.time()
 
 # 写死学习率
-set_lr(optimizer, 1e-4)
+set_lr(optimizer, 1e-5)
+
+#仿照原作者，更换epoch时不重置iteration
+num_iters_per_epoch = len(train_dataset)//args.batch_size #由于我开启了drop_last所以地板除是精确的
+total_iters = num_epochs * num_iters_per_epoch
 
 for epoch in range(num_epochs):
     # # Resume from start_iter
@@ -275,23 +279,26 @@ for epoch in range(num_epochs):
         if torch.isfinite(loss).item():
             optimizer.step()
 
-        cur_time = time.time()
-        elapsed = cur_time - last_time
-        last_time = cur_time
         iteration += 1
 
         if iteration % 10 == 0:
-            # eta_str = str(datetime.timedelta(seconds=(cfg.max_iter - iteration) * time_avg.get_avg())).split('.')[0]
-            #
-            # total = sum([loss_avgs[k].get_avg() for k in losses])
-            # loss_labels = sum([[k, loss_avgs[k].get_avg()] for k in loss_types if k in losses], [])
-            #
-            # print(('[%3d] %7d ||' + (' %s: %.3f |' * len(losses)) + ' T: %.3f || ETA: %s || timer: %.3f')
-            #       % tuple([epoch, iteration] + loss_labels + [total, eta_str, elapsed]), flush=True)
+            cur_time = time.time()
+            elapsed = cur_time - last_time  # 经过的时间
+            last_time = cur_time
+            avg_time = elapsed/10 #每个iter消耗的秒数
+            iter_persec = 1/avg_time #每秒运算的iter数
+            eta_time = (total_iters - iteration)*avg_time #预计剩余秒数
+            eta_str = timetools.seconds2str(eta_time,reduce=True)
 
-            print("[{:d}] {:0>7d} || loss:{:.2f}".format(epoch, iteration, loss), flush=True)
-            for k in losses:
-                print(k, " {:.4f}".format(losses[k]))
+            fmt_str = "[{:d}] {:0>6d} || total_loss:{:.2f} |" + " {}: {:.4f} |"*len(losses) + " eta:{} | iter/s:{:.3f}"
+            loss_labels = sum([[k,losses[k].detach().cpu().numpy()] for k in losses],[])
+            data = [epoch, iteration, loss]+loss_labels +[eta_str,iter_persec]
+            print(fmt_str.format(*data),flush=True)
+
+            # print(eta_str,'\n',iter_persec)
+            # stt= " eta:{} | iter/s:{:.3f}"
+            # rs = stt.format(eta_str,iter_persec)
+            # print(rs)
 
         if iteration % save_interval == 0:
             print('Saving state, iter:', iteration)

@@ -1,6 +1,12 @@
 # YOLACT
 
+``pytorch version``
+
 An  adapted and simplified version of original YOLACT (https://github.com/dbolya/yolact/).
+
+Paper: [YOLACT: Real-time Instance Segmentation](https://arxiv.org/abs/1904.02689)
+
+
 
 ## Prepare
 

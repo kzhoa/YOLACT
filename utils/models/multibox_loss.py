@@ -231,7 +231,10 @@ class MultiBoxLoss(nn.Module):
         return class_existence_alpha * F.binary_cross_entropy_with_logits(class_data, class_existence_t,
                                                                           reduction='sum')
 
-    def semantic_segmentation_loss(self, segment_data, mask_t, class_t, interpolation_mode='bilinear'):
+    def semantic_segmentation_loss(self, segment_data,
+                                   mask_t, #[bz][numobj,imgh,imgw]
+                                   class_t,
+                                   interpolation_mode='bilinear'):
         # Note num_classes here is without the background class so cfg.num_classes-1
         batch_size, num_classes, mask_h, mask_w = segment_data.size()
         loss_s = 0
@@ -241,9 +244,10 @@ class MultiBoxLoss(nn.Module):
             cur_class_t = class_t[idx]
 
             with torch.no_grad():
+                #mask_t
                 downsampled_masks = F.interpolate(mask_t[idx].unsqueeze(0), (mask_h, mask_w),
                                                   mode=interpolation_mode, align_corners=False).squeeze(0)
-                downsampled_masks = downsampled_masks.gt(0.5).float()
+                downsampled_masks = downsampled_masks.gt(0.5).float() #二值化处理
 
                 # Construct Semantic Segmentation
                 segment_t = torch.zeros_like(cur_segment, requires_grad=False)

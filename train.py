@@ -176,7 +176,7 @@ else:
     torch.set_default_tensor_type('torch.FloatTensor')
 
 # --显式参数--
-lr = 1e-3
+lr = 1e-5
 cur_lr = 1e-3
 decay = 5e-4
 momentum = 0.9
@@ -246,7 +246,7 @@ step_index = 0
 last_time = time.time()
 
 # 写死学习率
-set_lr(optimizer, 1e-4)
+set_lr(optimizer, 2e-6)
 
 #仿照原作者，更换epoch时不重置iteration
 num_iters_per_epoch = len(train_dataset)//args.batch_size #由于我开启了drop_last所以地板除是精确的

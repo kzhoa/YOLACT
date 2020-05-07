@@ -32,12 +32,13 @@ class MovingAverage():
 
     def reset(self):
         """ Resets the MovingAverage to its initial state. """
-        self.window = deque()
+        self.window = deque([0],maxlen=self.max_window_size) #带初始值，防止len为0，这样avg除法不会出错
         self.sum = 0
 
     def get_avg(self):
         """ Returns the average of the elements in the window. """
-        return self.sum / max(len(self.window), 1)
+        #return self.sum / max(len(self.window), 1)
+        return self.sum / len(self.window)
 
     def __str__(self):
         return str(self.get_avg())

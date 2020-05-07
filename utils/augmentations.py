@@ -622,68 +622,6 @@ class BackboneTransform(object):
         return img.astype(np.float32), masks, boxes, labels
 
 
-# class BaseTransform(object):
-#     """ Transorm to be used when evaluating. """
-#
-#     def __init__(self, mean=MEANS, std=STD):
-#         self.augment = Compose([
-#             ConvertFromInts(),
-#             Resize(resize_gt=False),
-#             BackboneTransform(cfg.backbone.transform, mean, std, 'BGR')
-#         ])
-#
-#     def __call__(self, img, masks=None, boxes=None, labels=None):
-#         return self.augment(img, masks, boxes, labels)
-
-
-
-# class FastBaseTransform(torch.nn.Module):
-#     """
-#     Transform that does all operations on the GPU for super speed.
-#     This doesn't suppport a lot of config settings and should only be used for production.
-#     Maintain this as necessary.
-#     """
-#
-#     def __init__(self):
-#         super().__init__()
-#
-#         self.mean = torch.Tensor(MEANS).float().cuda()[None, :, None, None]
-#         self.std = torch.Tensor(STD).float().cuda()[None, :, None, None]
-#         self.transform = cfg.backbone.transform
-#
-#     def forward(self, img):
-#         self.mean = self.mean.to(img.device)
-#         self.std = self.std.to(img.device)
-#
-#         # img assumed to be a pytorch BGR image with channel order [n, h, w, c]
-#         if cfg.preserve_aspect_ratio:
-#             _, h, w, _ = img.size()
-#             img_size = Resize.calc_size_preserve_ar(w, h, cfg.max_size)
-#             img_size = (img_size[1], img_size[0])  # Pytorch needs h, w
-#         else:
-#             img_size = (cfg.max_size, cfg.max_size)
-#
-#         img = img.permute(0, 3, 1, 2).contiguous()
-#         img = F.interpolate(img, img_size, mode='bilinear', align_corners=False)
-#
-#         if self.transform.normalize:
-#             img = (img - self.mean) / self.std
-#         elif self.transform.subtract_means:
-#             img = (img - self.mean)
-#         elif self.transform.to_float:
-#             img = img / 255
-#
-#         if self.transform.channel_order != 'RGB':
-#             raise NotImplementedError
-#
-#         img = img[:, (2, 1, 0), :, :].contiguous()
-#
-#         # Return value is in channel order [n, c, h, w] and RGB
-#         return img
-
-
-# --------------------------------------------------------
-
 class Compose(object):
     """Composes several augmentations together.
     Args:
@@ -749,3 +687,70 @@ class SSDAugmentation(object):
 
     def __call__(self, img, masks, boxes, labels):
         return self.augment(img, masks, boxes, labels)
+
+
+
+class BaseTransform(object):
+    """ Transorm to be used when evaluating. """
+
+    def __init__(self, mean=(103.94, 116.78, 123.68), std=(57.38, 57.12, 58.40)):
+        self.augment = Compose([
+            ConvertFromInts(),
+            Resize(resize_gt=False),
+            BackboneTransform(mean,
+                              std,
+                              normalize=True,
+                              subtract_means=False,  # 是否减去均值
+                              to_float=False,  # 是否除以255
+                              in_channel_order='bgr',
+                              out_channel_order='rgb')
+        ])
+
+        def __call__(self, img, masks=None, boxes=None, labels=None):
+            return self.augment(img, masks, boxes, labels)
+
+    # class FastBaseTransform(torch.nn.Module):
+    #     """
+    #     Transform that does all operations on the GPU for super speed.
+    #     This doesn't suppport a lot of config settings and should only be used for production.
+    #     Maintain this as necessary.
+    #     """
+    #
+    #     def __init__(self):
+    #         super().__init__()
+    #
+    #         self.mean = torch.Tensor(MEANS).float().cuda()[None, :, None, None]
+    #         self.std = torch.Tensor(STD).float().cuda()[None, :, None, None]
+    #         self.transform = cfg.backbone.transform
+    #
+    #     def forward(self, img):
+    #         self.mean = self.mean.to(img.device)
+    #         self.std = self.std.to(img.device)
+    #
+    #         # img assumed to be a pytorch BGR image with channel order [n, h, w, c]
+    #         if cfg.preserve_aspect_ratio:
+    #             _, h, w, _ = img.size()
+    #             img_size = Resize.calc_size_preserve_ar(w, h, cfg.max_size)
+    #             img_size = (img_size[1], img_size[0])  # Pytorch needs h, w
+    #         else:
+    #             img_size = (cfg.max_size, cfg.max_size)
+    #
+    #         img = img.permute(0, 3, 1, 2).contiguous()
+    #         img = F.interpolate(img, img_size, mode='bilinear', align_corners=False)
+    #
+    #         if self.transform.normalize:
+    #             img = (img - self.mean) / self.std
+    #         elif self.transform.subtract_means:
+    #             img = (img - self.mean)
+    #         elif self.transform.to_float:
+    #             img = img / 255
+    #
+    #         if self.transform.channel_order != 'RGB':
+    #             raise NotImplementedError
+    #
+    #         img = img[:, (2, 1, 0), :, :].contiguous()
+    #
+    #         # Return value is in channel order [n, c, h, w] and RGB
+    #         return img
+
+    # --------------------------------------------------------

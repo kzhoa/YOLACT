@@ -2,9 +2,11 @@
 import os
 import pickle
 import random
+import argparse
 
 import torch
-import argparse
+import matplotlib.pyplot as plt
+
 
 from data.coco import COCODetection
 from yolact import Yolact
@@ -77,7 +79,134 @@ def badhash(x):
     return x
 
 
-# 参数部分
+def prep_metrics(ap_data, dets, img, gt, gt_masks, h, w, num_crowd, image_id, detections: Detections = None):
+    """ Returns a list of APs for this image, with each element being for a class  """
+    if not args.output_coco_json:
+        with timer.env('Prepare gt'):
+            gt_boxes = torch.Tensor(gt[:, :4])
+            gt_boxes[:, [0, 2]] *= w
+            gt_boxes[:, [1, 3]] *= h
+            gt_classes = list(gt[:, 4].astype(int))
+            gt_masks = torch.Tensor(gt_masks).view(-1, h * w)
+
+            if num_crowd > 0:
+                split = lambda x: (x[-num_crowd:], x[:-num_crowd])
+                crowd_boxes, gt_boxes = split(gt_boxes)
+                crowd_masks, gt_masks = split(gt_masks)
+                crowd_classes, gt_classes = split(gt_classes)
+
+    with timer.env('Postprocess'):
+        classes, scores, boxes, masks = postprocess(dets, w, h, crop_masks=args.crop,
+                                                    score_threshold=args.score_threshold)
+
+        if classes.size(0) == 0:
+            return
+
+        classes = list(classes.cpu().numpy().astype(int))
+        if isinstance(scores, list):
+            box_scores = list(scores[0].cpu().numpy().astype(float))
+            mask_scores = list(scores[1].cpu().numpy().astype(float))
+        else:
+            scores = list(scores.cpu().numpy().astype(float))
+            box_scores = scores
+            mask_scores = scores
+        masks = masks.view(-1, h * w).cuda()
+        boxes = boxes.cuda()
+
+    if args.output_coco_json:
+        with timer.env('JSON Output'):
+            boxes = boxes.cpu().numpy()
+            masks = masks.view(-1, h, w).cpu().numpy()
+            for i in range(masks.shape[0]):
+                # Make sure that the bounding box actually makes sense and a mask was produced
+                if (boxes[i, 3] - boxes[i, 1]) * (boxes[i, 2] - boxes[i, 0]) > 0:
+                    detections.add_bbox(image_id, classes[i], boxes[i, :], box_scores[i])
+                    detections.add_mask(image_id, classes[i], masks[i, :, :], mask_scores[i])
+            return
+
+    with timer.env('Eval Setup'):
+        num_pred = len(classes)
+        num_gt = len(gt_classes)
+
+        mask_iou_cache = _mask_iou(masks, gt_masks)
+        bbox_iou_cache = _bbox_iou(boxes.float(), gt_boxes.float())
+
+        if num_crowd > 0:
+            crowd_mask_iou_cache = _mask_iou(masks, crowd_masks, iscrowd=True)
+            crowd_bbox_iou_cache = _bbox_iou(boxes.float(), crowd_boxes.float(), iscrowd=True)
+        else:
+            crowd_mask_iou_cache = None
+            crowd_bbox_iou_cache = None
+
+        box_indices = sorted(range(num_pred), key=lambda i: -box_scores[i])
+        mask_indices = sorted(box_indices, key=lambda i: -mask_scores[i])
+
+        iou_types = [
+            ('box', lambda i, j: bbox_iou_cache[i, j].item(),
+             lambda i, j: crowd_bbox_iou_cache[i, j].item(),
+             lambda i: box_scores[i], box_indices),
+            ('mask', lambda i, j: mask_iou_cache[i, j].item(),
+             lambda i, j: crowd_mask_iou_cache[i, j].item(),
+             lambda i: mask_scores[i], mask_indices)
+        ]
+
+    timer.start('Main loop')
+    for _class in set(classes + gt_classes):
+        ap_per_iou = []
+        num_gt_for_class = sum([1 for x in gt_classes if x == _class])
+
+        for iouIdx in range(len(iou_thresholds)):
+            iou_threshold = iou_thresholds[iouIdx]
+
+            for iou_type, iou_func, crowd_func, score_func, indices in iou_types:
+                gt_used = [False] * len(gt_classes)
+
+                ap_obj = ap_data[iou_type][iouIdx][_class]
+                ap_obj.add_gt_positives(num_gt_for_class)
+
+                for i in indices:
+                    if classes[i] != _class:
+                        continue
+
+                    max_iou_found = iou_threshold
+                    max_match_idx = -1
+                    for j in range(num_gt):
+                        if gt_used[j] or gt_classes[j] != _class:
+                            continue
+
+                        iou = iou_func(i, j)
+
+                        if iou > max_iou_found:
+                            max_iou_found = iou
+                            max_match_idx = j
+
+                    if max_match_idx >= 0:
+                        gt_used[max_match_idx] = True
+                        ap_obj.push(score_func(i), True)
+                    else:
+                        # If the detection matches a crowd, we can just ignore it
+                        matched_crowd = False
+
+                        if num_crowd > 0:
+                            for j in range(len(crowd_classes)):
+                                if crowd_classes[j] != _class:
+                                    continue
+
+                                iou = crowd_func(i, j)
+
+                                if iou > iou_threshold:
+                                    matched_crowd = True
+                                    break
+
+                        # All this crowd code so that we can make sure that our eval code gives the
+                        # same result as COCOEval. There aren't even that many crowd annotations to
+                        # begin with, but accuracy is of the utmost importance.
+                        if not matched_crowd:
+                            ap_obj.push(score_func(i), False)
+    # timer.stop('Main loop')
+
+
+#--- 参数部分
 parser = argparse.ArgumentParser(
     description='YOLACT COCO Evaluation')
 parser.add_argument('--cuda', default=True, type=str2bool,
@@ -107,22 +236,6 @@ parser.add_argument('--no_sort', default=False, dest='no_sort', action='store_tr
                     help='Do not sort images by hashed image ID.')
 
 args = parser.parse_args()
-
-# 数据集与标签
-valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
-                              info_file='./data/coco/annotations/instances_val2017.json',
-                              transform=BaseTransform(),
-                              has_gt=True
-                              )
-prep_coco_cats()
-
-# 模型
-print('Loading model...', end='')
-model = Yolact()
-model.load_weights(args.trained_model)
-model.eval()
-model = model.cuda() if args.cuda else model.cpu()
-print(' Done.')
 
 
 def evaluate(net: Yolact, dataset, train_mode=False):
@@ -157,7 +270,7 @@ def evaluate(net: Yolact, dataset, train_mode=False):
 
 
     print()
-
+    iou_thresholds = [x / 100 for x in range(50, 100, 5)]
     if not args.display and not args.benchmark:
             #不显示，直接算分
             # For each class and iou, stores tuples (score, isPositive)
@@ -169,7 +282,6 @@ def evaluate(net: Yolact, dataset, train_mode=False):
             detections = Detections()
 
     dataset_indices = list(range(len(dataset)))
-
     if args.shuffle:
         random.shuffle(dataset_indices)
     elif not args.no_sort:
@@ -186,22 +298,110 @@ def evaluate(net: Yolact, dataset, train_mode=False):
 
     #再else就什么也不做
 
+    #我们去掉了args.max_images之后，这句也可以不要了。不过以免万一先做保留。
+    dataset_indices = dataset_indices[:dataset_size]
 
-# 核心入口
-with torch.no_grad():
-    if not os.path.exists('results'):
-        os.makedirs('results')
+    # Main eval loop
+    for it, image_idx in enumerate(dataset_indices):
 
-    if args.cuda:
-        torch.backends.cudnn.fastest = True
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
-    else:
-        torch.set_default_tensor_type('torch.FloatTensor')
+        #Load Data
+        img, gt, gt_masks, h, w, num_crowd = dataset.pull_item(image_idx)
 
-    if args.resume and not args.display:
-        with open(args.ap_data_file, 'rb') as f:
-            ap_data = pickle.load(f)
-        calc_mAP(ap_data)
-        exit()
+        batch = torch.autograd.Variable(img.unsqueeze(0))
+        if args.cuda:
+            batch = batch.cuda()
 
-    evaluate(model, valid_dataset)
+        #送入网络'Network Extra'
+        preds = net(batch)
+
+        # Perform the meat of the operation here depending on our mode.
+        if args.display:
+            img_numpy = prep_display(preds, img, h, w) #我们不搞display
+        elif args.benchmark:
+            prep_benchmark(preds, h, w) #我们也不搞这个
+        else:
+            prep_metrics(ap_data, preds, img, gt, gt_masks, h, w, num_crowd, dataset.ids[image_idx], detections)
+
+        # First couple of images take longer because we're constructing the graph.
+        # Since that's technically initialization, don't include those in the FPS calculations.
+        # if it > 1:
+        #     frame_times.add(timer.total_time())
+
+        if args.display:
+            if it > 1:
+                print('Avg FPS: %.4f' % (1 / frame_times.get_avg()))
+            plt.imshow(img_numpy)
+            plt.title(str(dataset.ids[image_idx]))
+            plt.show()
+        elif not args.no_bar:
+            if it > 1:
+                fps = 1 / frame_times.get_avg()
+            else:
+                fps = 0
+            progress = (it + 1) / dataset_size * 100
+            progress_bar.set_val(it + 1)
+            print('\rProcessing Images  %s %6d / %6d (%5.2f%%)    %5.2f fps        '
+                  % (repr(progress_bar), it + 1, dataset_size, progress, fps), end='')
+
+
+    if not args.display and not args.benchmark:
+        print()
+        if args.output_coco_json:
+            print('Dumping detections...')
+            if args.output_web_json:
+                detections.dump_web()
+            else:
+                detections.dump()
+        else:
+            if not train_mode:
+                print('Saving data...')
+                with open(args.ap_data_file, 'wb') as f:
+                    pickle.dump(ap_data, f)
+
+            return calc_map(ap_data)
+    elif args.benchmark:
+        print()
+        print()
+        print('Stats for the last frame:')
+        timer.print_stats()
+        avg_seconds = frame_times.get_avg()
+        print('Average: %5.2f fps, %5.2f ms' % (1 / frame_times.get_avg(), 1000 * avg_seconds))
+
+
+if __name__ == '__main__':
+
+    # 数据集与标签
+    valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
+                                  info_file='./data/coco/annotations/instances_val2017.json',
+                                  transform=BaseTransform(),
+                                  has_gt=True
+                                  )
+    prep_coco_cats()
+
+    # 模型
+    print('Loading model...', end='')
+    model = Yolact()
+    model.load_weights(args.trained_model)
+    model.eval()
+    model = model.cuda() if args.cuda else model.cpu()
+    print(' Done.')
+
+
+    # 核心入口
+    with torch.no_grad():
+        if not os.path.exists('results'):
+            os.makedirs('results')
+
+        if args.cuda:
+            torch.backends.cudnn.fastest = True
+            torch.set_default_tensor_type('torch.cuda.FloatTensor')
+        else:
+            torch.set_default_tensor_type('torch.FloatTensor')
+
+        if args.resume and not args.display:
+            with open(args.ap_data_file, 'rb') as f:
+                ap_data = pickle.load(f)
+            calc_mAP(ap_data)
+            exit()
+
+        evaluate(model, valid_dataset)

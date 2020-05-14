@@ -262,7 +262,8 @@ class MultiBoxLoss(nn.Module):
 
     def ohem_conf_loss(self,
                        conf_data,  # (bz,numpriors,num_classes)
-                       conf_t, pos,
+                       conf_t, #(bz,numpriors)
+                       pos,
                        num  # forward里传进来的num就是batchsize，不知道怎么吐槽这个变量命名习惯。我怕他自己以后没注释都看不懂。
                        ):
         # Compute max conf across batch for hard negative mining
@@ -276,8 +277,8 @@ class MultiBoxLoss(nn.Module):
         else:
             # i.e. -softmax(class 0 confidence)
             # 上面是同batch每个prior取最大的类别得分，下面这个是每个prior对每个类别得分做类似softmax的操作后加总所有类别。
-            loss_c = log_sum_exp(batch_conf) - batch_conf[:,
-                                               0]  # 这个处理比较神奇，以(x_max-背景类conf)为基石，其他类按得分接近x_max的程度获得(0,log2]范围的bonus。
+            loss_c = log_sum_exp(batch_conf) - batch_conf[:,0]
+            # 以(x_max-背景类conf)为基石，其他类按得分接近x_max的程度获得(0,log2]范围的bonus。
 
         # 这个算法有点神奇。
         # 我们任选一个真实标签为0的prior,因为默认参数是走log_sum_exp的。
@@ -292,7 +293,7 @@ class MultiBoxLoss(nn.Module):
         loss_c[pos] = 0  # 将真实标签不为背景的prior，loss置0。pos=conf_t>0，所以参数只需要一个conf_t,根本没必要传个pos进来啊。
         loss_c[conf_t < 0] = 0  # 将真实标签为中性（-1）的prior，loss置为0。
         # 经过上面这两步，只剩下对应gt的label为背景的那些prior有loss。
-        # 所以...所谓的困难样本处理，就是处理真实标签为0的样本？？？这就是困难样本:ma:
+        # 所以...所谓的困难样本neg，就是处理真实标签为0的样本？？？这就是困难样本:ma:
         _, loss_idx = loss_c.sort(1, descending=True)  # 利用torch.sort,返回loss最大的prior的序号，(bz,num_priors)
         _, idx_rank = loss_idx.sort(1)  # 二次升序sort的效果是，知道第idx个框在原来batch中的排名，(bz,num_priors)
         num_pos = pos.long().sum(1, keepdim=True)  # (bz,1),每个batch内有几个正框
@@ -340,7 +341,8 @@ class MultiBoxLoss(nn.Module):
 
         self.conf_alpha = 1.0
 
-        # 总结一下，ohem_loss，就是取真实label为0（背景)的priors的num_classes个输出结果，与真实label做CE。
+        # 总结一下，ohem_loss，就是根据pos的数量，生成neg的数量，取真实label为0（背景)的priors的loss倒排中，前num_neg个输出结果对应的索引，
+        # 再与所有pos框的索引结合成总索引，取出num_classes个预测结果,与真实label做CE。
         return self.conf_alpha * loss_c
 
     def focal_conf_loss(self, conf_data, conf_t):

@@ -15,7 +15,7 @@ from utils.functions import SavePath
 from utils.logger import Log
 from utils import timetools
 
-# import eval as eval_script #从eval.py里面拿函数，可是这样的话为什么不把公用函数单独提出来呢???
+import eval as eval_script #从eval.py里面拿函数，可是这样的话为什么不把公用函数单独提出来呢???
 
 # ---2个工具类----
 class NetLoss(torch.nn.Module):
@@ -79,6 +79,8 @@ def gradinator(x):
     x.requires_grad = False
     return x
 
+def setup_eval():
+    eval_script.parse_args(['--no_bar', '--max_images='+str(args.validation_size)])
 
 def prepare_data(datum, devices: list = None, allocation: list = None):
     with torch.no_grad():
@@ -198,15 +200,15 @@ train_dataset = COCODetection(image_path='./data/coco/images/train2017/',
                               info_file='./data/coco/annotations/instances_train2017.json',
                               transform=SSDAugmentation(mean=MEANS, std=STD))
 
-# valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
-#                               info_file='./data/coco/annotations/instances_val2017.json',
-#                               transform=SSDAugmentation(mean=MEANS, std=STD))
+valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
+                              info_file='./data/coco/annotations/instances_val2017.json',
+                              transform=SSDAugmentation(mean=MEANS, std=STD))
 
-# if args.validation_epoch > 0:
-#     setup_eval()
-#     valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
-#                                   info_file='./data/coco/annotations/instances_val2017.json',
-#                                   transform=SSDAugmentation(mean=MEANS, std=STD))
+if args.validation_epoch > 0:
+    setup_eval()
+    valid_dataset = COCODetection(image_path='./data/coco/images/val2017/',
+                                  info_file='./data/coco/annotations/instances_val2017.json',
+                                  transform=SSDAugmentation(mean=MEANS, std=STD))
 
 data_loader = torch.utils.data.DataLoader(train_dataset, args.batch_size,
                                           num_workers=args.num_workers,

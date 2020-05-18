@@ -457,7 +457,7 @@ class Yolact(nn.Module):
             # eval时，仅对分类预测结果进行detect，因为我们只关注mAP与FPS
             # conf.shape = (bz, 5*num_prior*h*w, num_classes)
             pred_outs['conf'] = F.softmax(pred_outs['conf'], -1)
-            return self.detect(pred_outs, self)
+            return self.detection(pred_outs, self)
 
     # 其他功能函数
     def train(self, mode=True):

@@ -26,6 +26,8 @@ class Detect(object):
             raise ValueError('nms_threshold must be non negative.')
         self.conf_thresh = conf_thresh
 
+        self.max_size=550 #1.0默认参数
+        self.max_num_detections = 100
         self.use_cross_class_nms = False
         self.use_fast_nms = False
 
@@ -194,7 +196,7 @@ class Detect(object):
         scr_lst = []
 
         # Multiplying by max_size is necessary because of how cnms computes its area and intersections
-        boxes = boxes * cfg.max_size
+        boxes = boxes * self.max_size
 
         for _cls in range(num_classes):
             cls_scores = scores[_cls, :]
@@ -220,11 +222,12 @@ class Detect(object):
         scores  = torch.cat(scr_lst, dim=0)
 
         scores, idx2 = scores.sort(0, descending=True)
-        idx2 = idx2[:cfg.max_num_detections]
-        scores = scores[:cfg.max_num_detections]
+        idx2 = idx2[:self.max_num_detections]
+        scores = scores[:self.max_num_detections]
 
         idx = idx[idx2]
         classes = classes[idx2]
 
         # Undo the multiplication above
-        return boxes[idx] / cfg.max_size, masks[idx], classes, scores
+
+        return boxes[idx] / self.max_size, masks[idx], classes, scores

@@ -16,4 +16,4 @@ def seconds2str(seconds:int,reduce=True):
         return res
     else:
         #总是显示时分秒
-        return time.strftime('%Hh %Mm %Ss', time.gmtime(80))
+        return time.strftime('%Hh %Mm %Ss', time.gmtime(seconds))
